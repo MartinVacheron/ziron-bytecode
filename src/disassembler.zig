@@ -4,11 +4,11 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 
 pub const Disassembler = struct {
-    chunk: *Chunk,
+    chunk: *const Chunk,
 
     const Self = @This();
 
-    pub fn init(chunk: *Chunk) Self {
+    pub fn init(chunk: *const Chunk) Self {
         return .{
             .chunk = chunk,
         };
@@ -34,8 +34,13 @@ pub const Disassembler = struct {
 
         const op: OpCode = @enumFromInt(self.chunk.code.items[offset]);
         return switch (op) {
-            .Return => simple_instruction("OP_RETURN", offset),
             .Constant => self.constant_instruction("OP_CONSTANT", offset),
+            .Add => simple_instruction("OP_ADD", offset),
+            .Subtract => simple_instruction("OP_SUBTRACT", offset),
+            .Multiply => simple_instruction("OP_MULTIPLY", offset),
+            .Divide => simple_instruction("OP_DIVIDE", offset),
+            .Negate => simple_instruction("OP_NEGATE", offset),
+            .Return => simple_instruction("OP_RETURN", offset),
         };
     }
 

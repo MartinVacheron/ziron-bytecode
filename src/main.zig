@@ -5,40 +5,51 @@ const Chunk = @import("chunk.zig").Chunk;
 const Disassembler = @import("disassembler.zig").Disassembler;
 const Vm = @import("vm.zig").Vm;
 
-const Opts = struct {
-    debug_trace: bool = false,
-};
-
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    var args = try std.process.ArgIterator.initWithAllocator(allocator);
+    _ = args.next(); // file name
+
+    if (args.next()) |filename| {
+        run_file(filename, allocator) catch |err| {
+            var buf: [500]u8 = undefined;
+            _ = try std.fmt.bufPrint(&buf, "Error: {}, unable to open file at: {s}\n", .{ err, filename });
+            @panic(&buf);
+        };
+    } else {
+        // try repl(allocator);
+    }
+}
+
+fn run_file(filename: []const u8, allocator: std.mem.Allocator) !void {
+    const file = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
+    defer file.close();
+
+    const size = try file.getEndPos();
+
+    const buf = try allocator.alloc(u8, size);
+    defer allocator.free(buf);
+
+    _ = try file.readAll(buf);
+
     var chunk = Chunk.init(allocator);
     defer chunk.deinit();
 
-    // TMP
-    const constant_idx = try chunk.write_constant(.{ .Float = 1.2 });
-    try chunk.write_op(.Constant, 123);
-    try chunk.write_byte(@truncate(constant_idx), 123);
-    try chunk.write_op(.Return, 123);
-
-    var disassembler = Disassembler.init(&chunk);
-    try disassembler.dis_chunk("test chunk");
-
-    var vm = Vm.init(&chunk);
+    var vm = Vm.new(&chunk);
+    vm.init();
     defer vm.deinit();
 
-    try vm.interpret();
-
-    try repl(allocator);
+    vm.interpret(buf);
 }
 
 fn repl(allocator: std.mem.Allocator) !void {
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
-    var input = try std.ArrayList(u8).initCapacity(allocator, 1024);
+    var input = std.ArrayList(u8).init(allocator);
     defer input.deinit();
 
     var lexer = Lexer.init(allocator);
@@ -46,7 +57,7 @@ fn repl(allocator: std.mem.Allocator) !void {
 
     var buffer: [500]u8 = undefined;
 
-    _ = try stdout.write("\t\tRizon language REPL\n");
+    _ = try stdout.write("\t\tZiron language REPL\n");
 
     while (true) {
         _ = try stdout.write("\n> ");

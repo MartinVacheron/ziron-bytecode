@@ -6,10 +6,10 @@ pub const LexerErr = error{
 };
 
 pub const TokenKind = enum {
-    RightParen,
     LeftParen,
-    RightBrace,
+    RightParen,
     LeftBrace,
+    RightBrace,
     Colon,
     Comma,
     Dot,
@@ -18,10 +18,11 @@ pub const TokenKind = enum {
     Minus,
     Star,
     Slash,
-    Less,
-    Greater,
+
     Bang,
     Equal,
+    Less,
+    Greater,
     LessEqual,
     GreaterEqual,
     EqualEqual,
@@ -32,157 +33,185 @@ pub const TokenKind = enum {
     Float,
     Int,
 
-    NewLine,
-    Eof,
-};
+    And,
+    Struct,
+    Else,
+    False,
+    For,
+    Fn,
+    If,
+    Null,
+    Or,
+    Print,
+    Return,
+    Self,
+    True,
+    Var,
+    While,
 
-pub const Span = struct {
-    start: usize,
-    end: usize,
+    NewLine,
+    Error,
+    Eof,
 };
 
 pub const Token = struct {
     kind: TokenKind,
-    value: ?[]const u8,
-    span: Span,
+    lexeme: ?[]const u8,
+    line: u32,
 };
 
 pub const Lexer = struct {
-    code: []const u8,
+    start: []const u8,
     current: usize,
-    start: usize,
-    tokens: std.ArrayList(Token),
+    line: u32,
 
-    pub fn init(allocator: Allocator) Lexer {
+    const Self = @This();
+
+    pub fn new() Self {
         return .{
-            .code = undefined,
+            .start = undefined,
             .current = 0,
-            .start = 0,
-            .tokens = std.ArrayList(Token).init(allocator),
+            .line = 1,
         };
     }
 
-    pub fn reinit(self: *Lexer) void {
-        self.code = undefined;
-        self.tokens.clearAndFree();
+    pub fn init(self: *Self, source: []const u8) void {
+        self.start = source;
         self.current = 0;
-        self.start = 0;
+        self.line = 1;
     }
 
-    pub fn deinit(self: Lexer) void {
-        self.tokens.deinit();
-    }
+    pub fn lex(self: *Self) Token {
+        self.skip_space();
+        self.start = self.start[self.current..];
+        self.current = 0;
 
-    pub fn lex(self: *Lexer, code: []const u8) ![]Token {
-        self.code = code;
-
-        while (!self.eof()) {
-            self.skip_space();
-            self.start = self.current;
-
-            if (std.ascii.isAlphabetic(self.peek())) {
-                try self.identifier();
-            } else if (std.ascii.isDigit(self.peek())) {
-                try self.number();
-            } else {
-                try switch (self.advance()) {
-                    '(' => self.add_token(.LeftParen),
-                    ')' => self.add_token(.RightParen),
-                    '{' => self.add_token(.LeftBrace),
-                    '}' => self.add_token(.RightBrace),
-                    ':' => self.add_token(.Colon),
-                    ',' => self.add_token(.Comma),
-                    '.' => self.add_token(.Dot),
-                    '+' => self.add_token(.Plus),
-                    '-' => self.add_token(.Minus),
-                    '*' => self.add_token(.Star),
-                    '/' => self.add_token(.Slash),
-                    '<' => self.add_if_equal_tk_else(.LessEqual, .Less),
-                    '>' => self.add_if_equal_tk_else(.GreaterEqual, .Greater),
-                    '!' => self.add_if_equal_tk_else(.BangEqual, .Bang),
-                    '=' => self.add_if_equal_tk_else(.EqualEqual, .Equal),
-                    '"' => self.string(),
-                    '\n' => self.add_token(.NewLine),
-                    else => @panic("unsupported token"),
-                };
-            }
+        if (self.eof()) {
+            return self.make_token(.Eof);
         }
 
-        return self.tokens.items;
+        return switch (self.advance()) {
+            '(' => self.make_token(.LeftParen),
+            ')' => self.make_token(.RightParen),
+            '{' => self.make_token(.LeftBrace),
+            '}' => self.make_token(.RightBrace),
+            ':' => self.make_token(.Colon),
+            ',' => self.make_token(.Comma),
+            '.' => self.make_token(.Dot),
+            '+' => self.make_token(.Plus),
+            '-' => self.make_token(.Minus),
+            '*' => self.make_token(.Star),
+            '/' => self.make_token(.Slash),
+            '<' => self.make_if_equal_or_else(.LessEqual, .Less),
+            '>' => self.make_if_equal_or_else(.GreaterEqual, .Greater),
+            '!' => self.make_if_equal_or_else(.BangEqual, .Bang),
+            '=' => self.make_if_equal_or_else(.EqualEqual, .Equal),
+            '"' => self.string(),
+            '\n' => blk: {
+                self.line += 1;
+                break :blk self.make_token(.NewLine);
+            },
+            else => self.error_token("Unexpected character"),
+        };
     }
 
-    fn string(self: *Lexer) !void {
-        self.start += 1;
-
+    fn string(self: *Self) Token {
         while (!self.eof() and self.peek() != '"') {
+            if (self.peek() == '\n') self.line += 1;
             _ = self.advance();
         }
 
         if (self.eof()) {
-            return error.UnterminatedString;
+            return self.error_token("unterminated string");
         }
 
-        try self.add_token_value(.String);
         _ = self.advance();
+        return self.make_token(.String);
     }
 
-    fn identifier(self: *Lexer) !void {
+    fn identifier(self: *Self) Token {
         while (!self.eof() and std.ascii.isAlphabetic(self.peek())) {
             _ = self.advance();
         }
 
-        try self.add_token_value(.Identifier);
+        return self.add_token(.Identifier);
     }
 
-    fn number(self: *Lexer) !void {
+    fn number(self: *Self) Token {
         while (!self.eof() and std.ascii.isDigit(self.peek())) {
             _ = self.advance();
         }
 
-        try self.add_token_value(.Int);
+        return self.add_token(.Int);
     }
 
-    fn add_token(self: *Lexer, kind: TokenKind) !void {
-        try self.tokens.append(.{
-            .kind = kind,
-            .value = null,
-            .span = .{ .start = self.start, .end = self.current },
-        });
+    fn peek(self: Self) u8 {
+        return self.start[self.current];
     }
 
-    fn add_token_value(self: *Lexer, kind: TokenKind) !void {
-        try self.tokens.append(.{
-            .kind = kind,
-            .value = self.code[self.start..self.current],
-            .span = .{ .start = self.start, .end = self.current },
-        });
-    }
-
-    fn add_if_equal_tk_else(self: *Lexer, if_equal: TokenKind, else_: TokenKind) !void {
-        if (!self.eof() and self.peek() == '=') {
-            _ = self.advance();
-            try self.add_token(if_equal);
-        } else {
-            try self.add_token(else_);
+    fn peek_next(self: Self) u8 {
+        if (self.current + 1 > self.start.len) {
+            return 0;
         }
+
+        return self.start[self.current + 1];
     }
 
-    fn advance(self: *Lexer) u8 {
+    fn advance(self: *Self) u8 {
         self.current += 1;
-        return self.code[self.current - 1];
+        return self.start[self.current - 1];
     }
 
-    fn peek(self: Lexer) u8 {
-        return self.code[self.current];
+    fn make_token(self: Self, kind: TokenKind) Token {
+        return .{
+            .kind = kind,
+            .lexeme = self.start[0..self.current],
+            .line = self.line,
+        };
     }
-
-    fn skip_space(self: *Lexer) void {
-        while (!self.eof() and self.peek() == ' ') {
-            _ = self.advance();
+    fn make_if_equal_or_else(self: *Self, if_equal: TokenKind, else_: TokenKind) Token {
+        if (self.match('=')) {
+            return self.make_token(if_equal);
+        } else {
+            return self.make_token(else_);
         }
     }
 
-    fn eof(self: Lexer) bool {
-        return self.current >= self.code.len;
+    fn error_token(self: Self, msg: []const u8) Token {
+        return .{
+            .kind = .Error,
+            .lexeme = msg,
+            .line = self.line,
+        };
+    }
+
+    fn match(self: *Self, char: u8) bool {
+        if (self.eof()) return false;
+        if (self.start[self.current] != char) return false;
+
+        self.current += 1;
+        return true;
+    }
+
+    fn skip_space(self: *Self) void {
+        while (!self.eof()) {
+            const c = self.peek();
+
+            switch (c) {
+                ' ', '\r' => _ = self.advance(),
+                '/' => {
+                    if (self.peek_next() == '/') {
+                        while (!self.eof() and self.peek() != '\n') {
+                            _ = self.advance();
+                        }
+                    }
+                },
+                else => break,
+            }
+        }
+    }
+
+    fn eof(self: Self) bool {
+        return self.current >= self.start.len;
     }
 };
