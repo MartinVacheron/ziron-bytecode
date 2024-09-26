@@ -29,22 +29,23 @@ pub const TokenKind = enum {
     BangEqual,
 
     Identifier,
-    String,
-    Float,
     Int,
+    Float,
+    String,
 
     And,
-    Struct,
     Else,
     False,
     For,
     Fn,
     If,
+    In,
     Null,
     Or,
     Print,
     Return,
     Self,
+    Struct,
     True,
     Var,
     While,
@@ -56,8 +57,12 @@ pub const TokenKind = enum {
 
 pub const Token = struct {
     kind: TokenKind,
-    lexeme: ?[]const u8,
+    lexeme: []const u8,
     line: u32,
+
+    pub fn empty() Token {
+        return .{ .kind = .Null, .lexeme = undefined, .line = 0 };
+    }
 };
 
 pub const Lexer = struct {
@@ -90,7 +95,12 @@ pub const Lexer = struct {
             return self.make_token(.Eof);
         }
 
-        return switch (self.advance()) {
+        const c = self.advance();
+
+        if (is_alpha(c)) return self.identifier();
+        if (std.ascii.isDigit(c)) return self.number();
+
+        return switch (c) {
             '(' => self.make_token(.LeftParen),
             ')' => self.make_token(.RightParen),
             '{' => self.make_token(.LeftBrace),
@@ -129,20 +139,85 @@ pub const Lexer = struct {
         return self.make_token(.String);
     }
 
-    fn identifier(self: *Self) Token {
-        while (!self.eof() and std.ascii.isAlphabetic(self.peek())) {
-            _ = self.advance();
-        }
-
-        return self.add_token(.Identifier);
-    }
-
     fn number(self: *Self) Token {
         while (!self.eof() and std.ascii.isDigit(self.peek())) {
             _ = self.advance();
         }
 
-        return self.add_token(.Int);
+        if (self.match('.')) {
+            while (!self.eof() and std.ascii.isDigit(self.peek())) {
+                _ = self.advance();
+            }
+
+            return self.make_token(.Float);
+        }
+
+        return self.make_token(.Int);
+    }
+
+    fn identifier(self: *Self) Token {
+        while (!self.eof() and (is_alpha(self.peek()) or std.ascii.isDigit(self.peek()))) {
+            _ = self.advance();
+        }
+
+        return self.make_token(self.identifier_type());
+    }
+
+    fn identifier_type(self: *Self) TokenKind {
+        return switch (self.start[0]) {
+            'a' => self.check_keyword(1, 2, "nd", .And),
+            'e' => self.check_keyword(1, 3, "lse", .Else),
+            'f' => blk: {
+                if (self.current > 1) {
+                    break :blk switch (self.start[1]) {
+                        'a' => self.check_keyword(2, 3, "lse", .False),
+                        'o' => self.check_keyword(2, 1, "r", .For),
+                        'n' => self.check_keyword(2, 0, "", .Fn),
+                        else => .Identifier,
+                    };
+                } else {
+                    break :blk .Identifier;
+                }
+            },
+            'i' => blk: {
+                if (self.current > 1) {
+                    break :blk switch (self.start[1]) {
+                        'f' => .If,
+                        'n' => .In,
+                        else => .Identifier,
+                    };
+                } else {
+                    break :blk .Identifier;
+                }
+            },
+            'n' => self.check_keyword(1, 3, "ull", .Null),
+            'o' => self.check_keyword(1, 1, "r", .Or),
+            'p' => self.check_keyword(1, 4, "rint", .Print),
+            'r' => self.check_keyword(1, 5, "eturn", .Return),
+            's' => blk: {
+                if (self.current > 1) {
+                    break :blk switch (self.start[1]) {
+                        't' => self.check_keyword(2, 4, "ruct", .Struct),
+                        'e' => self.check_keyword(2, 2, "lf", .Self),
+                        else => .Identifier,
+                    };
+                } else {
+                    break :blk .Identifier;
+                }
+            },
+            't' => self.check_keyword(1, 3, "rue", .True),
+            'v' => self.check_keyword(1, 2, "ar", .Var),
+            'w' => self.check_keyword(1, 4, "hile", .While),
+            else => .Identifier,
+        };
+    }
+
+    fn check_keyword(self: Self, start: u8, len: u8, rest: []const u8, kind: TokenKind) TokenKind {
+        if (self.current - start == len and std.mem.eql(u8, self.start[start .. start + len], rest)) {
+            return kind;
+        }
+
+        return .Identifier;
     }
 
     fn peek(self: Self) u8 {
@@ -150,7 +225,7 @@ pub const Lexer = struct {
     }
 
     fn peek_next(self: Self) u8 {
-        if (self.current + 1 > self.start.len) {
+        if (self.current + 1 >= self.start.len) {
             return 0;
         }
 
@@ -204,7 +279,7 @@ pub const Lexer = struct {
                         while (!self.eof() and self.peek() != '\n') {
                             _ = self.advance();
                         }
-                    }
+                    } else break;
                 },
                 else => break,
             }
@@ -215,3 +290,76 @@ pub const Lexer = struct {
         return self.current >= self.start.len;
     }
 };
+
+fn is_alpha(c: u8) bool {
+    return std.ascii.isAlphabetic(c) or c == '_';
+}
+
+// ------------
+//  Tests
+// ------------
+const expect = std.testing.expect;
+
+test "ident and strings" {
+    var lexer = Lexer.new();
+    lexer.init("foo bar variable truth");
+
+    const res = [_]Token{
+        .{ .kind = .Identifier, .lexeme = "foo", .line = 0 },
+        .{ .kind = .Identifier, .lexeme = "bar", .line = 0 },
+    };
+
+    for (0..res.len) |i| {
+        const tk = lexer.lex();
+        try expect(tk.kind == res[i].kind);
+        try expect(std.mem.eql(u8, tk.lexeme, res[i].lexeme));
+    }
+}
+
+test "numbers" {
+    var lexer = Lexer.new();
+    lexer.init("123 45.6 7.");
+
+    const res = [3]Token{
+        .{ .kind = .Int, .lexeme = "123", .line = 0 },
+        .{ .kind = .Float, .lexeme = "45.6", .line = 0 },
+        .{ .kind = .Float, .lexeme = "7.", .line = 0 },
+    };
+
+    for (0..res.len) |i| {
+        const tk = lexer.lex();
+        try expect(tk.kind == res[i].kind);
+        try expect(std.mem.eql(u8, tk.lexeme, res[i].lexeme));
+    }
+}
+
+test "tokens" {
+    var lexer = Lexer.new();
+    lexer.init("(){}.:,=!< ><= >= !=+-*/");
+
+    const res = [_]TokenKind{
+        .LeftParen,    .RightParen, .LeftBrace, .RightBrace, .Dot,     .Colon,
+        .Comma,        .Equal,      .Bang,      .Less,       .Greater, .LessEqual,
+        .GreaterEqual, .BangEqual,  .Plus,      .Minus,      .Star,    .Slash,
+    };
+
+    for (0..res.len) |i| {
+        const tk = lexer.lex();
+        try expect(tk.kind == res[i]);
+    }
+}
+
+test "keywords" {
+    var lexer = Lexer.new();
+    lexer.init("and else false for fn if in null or print return self struct true var while");
+
+    const res = [_]TokenKind{
+        .And,   .Else,   .False, .For,    .Fn,   .If,  .In,    .Null, .Or,
+        .Print, .Return, .Self,  .Struct, .True, .Var, .While,
+    };
+
+    for (0..res.len) |i| {
+        const tk = lexer.lex();
+        try expect(tk.kind == res[i]);
+    }
+}

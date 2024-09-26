@@ -6,11 +6,6 @@ const Value = @import("values.zig").Value;
 const Compiler = @import("compiler.zig").Compiler;
 const config = @import("config");
 
-const VmErr = error{
-    Compile,
-    Runtime,
-};
-
 const Stack = struct {
     values: [STACK_SIZE]Value,
     top: [*]Value,
@@ -41,28 +36,33 @@ const Stack = struct {
 };
 
 pub const Vm = struct {
-    chunk: *const Chunk,
+    chunk: Chunk,
     ip: [*]u8,
     stack: Stack,
     compiler: Compiler,
 
     const Self = @This();
 
-    pub fn new(chunk: *const Chunk) Self {
+    const VmErr = error{
+        Runtime,
+    } || Compiler.CompileErr;
+
+    pub fn new(allocator: std.mem.Allocator) Self {
         return .{
-            .chunk = chunk,
-            .ip = chunk.code.items.ptr,
+            .chunk = Chunk.init(allocator),
+            .ip = undefined,
             .stack = Stack.new(),
             .compiler = Compiler.init(),
         };
     }
 
     pub fn init(self: *Self) void {
+        self.ip = self.chunk.code.items.ptr;
         self.stack.init();
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
+        self.chunk.deinit();
     }
 
     fn read_byte(self: *Self) u8 {
@@ -71,8 +71,11 @@ pub const Vm = struct {
         return byte;
     }
 
-    pub fn interpret(self: *Self, source: []const u8) void {
-        self.compiler.compile(source);
+    pub fn interpret(self: *Self, source: []const u8) VmErr!void {
+        try self.compiler.compile(source, &self.chunk);
+        errdefer self.deinit();
+
+        try self.run();
     }
 
     pub fn run(self: *Self) VmErr!void {

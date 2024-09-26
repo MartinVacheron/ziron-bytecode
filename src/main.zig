@@ -35,14 +35,11 @@ fn run_file(filename: []const u8, allocator: std.mem.Allocator) !void {
 
     _ = try file.readAll(buf);
 
-    var chunk = Chunk.init(allocator);
-    defer chunk.deinit();
-
-    var vm = Vm.new(&chunk);
+    var vm = Vm.new(allocator);
     vm.init();
     defer vm.deinit();
 
-    vm.interpret(buf);
+    try vm.interpret(buf);
 }
 
 fn repl(allocator: std.mem.Allocator) !void {
