@@ -2,14 +2,22 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Value = @import("values.zig").Value;
 
+// PERF: better to have dedicated LessEqual, ... op codes
 pub const OpCode = enum(u8) {
-    Constant,
     Add,
-    Subtract,
-    Multiply,
+    Constant,
     Divide,
+    Equal,
+    False,
+    Greater,
+    Less,
+    Multiply,
     Negate,
+    Not,
+    Null,
     Return,
+    Subtract,
+    True,
 };
 
 pub const Chunk = struct {
@@ -48,7 +56,7 @@ pub const Chunk = struct {
         return self.constants.items.len - 1;
     }
 
-    pub fn read_constant(self: Self, index: u8) Value {
+    pub fn read_constant(self: *const Self, index: u8) Value {
         return self.constants.items[index];
     }
 };

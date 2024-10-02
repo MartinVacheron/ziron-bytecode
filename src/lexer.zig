@@ -212,7 +212,7 @@ pub const Lexer = struct {
         };
     }
 
-    fn check_keyword(self: Self, start: u8, len: u8, rest: []const u8, kind: TokenKind) TokenKind {
+    fn check_keyword(self: *const Self, start: u8, len: u8, rest: []const u8, kind: TokenKind) TokenKind {
         if (self.current - start == len and std.mem.eql(u8, self.start[start .. start + len], rest)) {
             return kind;
         }
@@ -220,11 +220,11 @@ pub const Lexer = struct {
         return .Identifier;
     }
 
-    fn peek(self: Self) u8 {
+    fn peek(self: *const Self) u8 {
         return self.start[self.current];
     }
 
-    fn peek_next(self: Self) u8 {
+    fn peek_next(self: *const Self) u8 {
         if (self.current + 1 >= self.start.len) {
             return 0;
         }
@@ -237,7 +237,7 @@ pub const Lexer = struct {
         return self.start[self.current - 1];
     }
 
-    fn make_token(self: Self, kind: TokenKind) Token {
+    fn make_token(self: *const Self, kind: TokenKind) Token {
         return .{
             .kind = kind,
             .lexeme = self.start[0..self.current],
@@ -252,7 +252,7 @@ pub const Lexer = struct {
         }
     }
 
-    fn error_token(self: Self, msg: []const u8) Token {
+    fn error_token(self: *const Self, msg: []const u8) Token {
         return .{
             .kind = .Error,
             .lexeme = msg,
@@ -286,7 +286,7 @@ pub const Lexer = struct {
         }
     }
 
-    fn eof(self: Self) bool {
+    fn eof(self: *const Self) bool {
         return self.current >= self.start.len;
     }
 };
@@ -353,10 +353,7 @@ test "keywords" {
     var lexer = Lexer.new();
     lexer.init("and else false for fn if in null or print return self struct true var while");
 
-    const res = [_]TokenKind{
-        .And,   .Else,   .False, .For,    .Fn,   .If,  .In,    .Null, .Or,
-        .Print, .Return, .Self,  .Struct, .True, .Var, .While,
-    };
+    const res = [_]TokenKind{ .And, .Else, .False, .For, .Fn, .If, .In, .Null, .Or, .Print, .Return, .Self, .Struct, .True, .Var, .While, .Eof };
 
     for (0..res.len) |i| {
         const tk = lexer.lex();

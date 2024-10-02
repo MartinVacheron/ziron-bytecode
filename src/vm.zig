@@ -1,9 +1,12 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const print = std.debug.print;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("values.zig").Value;
 const Compiler = @import("compiler.zig").Compiler;
+const Obj = @import("obj.zig").Obj;
+const ObjString = @import("obj.zig").ObjString;
 const config = @import("config");
 
 const Stack = struct {
@@ -33,6 +36,10 @@ const Stack = struct {
         self.top -= 1;
         return self.top[0];
     }
+
+    fn peek(self: *const Self, distance: usize) *const Value {
+        return &self.top[-1 - distance];
+    }
 };
 
 pub const Vm = struct {
@@ -40,29 +47,53 @@ pub const Vm = struct {
     ip: [*]u8,
     stack: Stack,
     compiler: Compiler,
+    allocator: Allocator,
+    objects: ?*Obj,
 
     const Self = @This();
 
     const VmErr = error{
-        Runtime,
+        RuntimeErr,
     } || Compiler.CompileErr;
 
-    pub fn new(allocator: std.mem.Allocator) Self {
+    pub fn new(allocator: Allocator) Self {
         return .{
             .chunk = Chunk.init(allocator),
             .ip = undefined,
             .stack = Stack.new(),
-            .compiler = Compiler.init(),
+            .compiler = Compiler.new(),
+            .allocator = allocator,
+            .objects = null,
         };
     }
 
     pub fn init(self: *Self) void {
-        self.ip = self.chunk.code.items.ptr;
         self.stack.init();
+        self.compiler.init(self);
     }
 
     pub fn deinit(self: *Self) void {
         self.chunk.deinit();
+        self.free_objects();
+    }
+
+    fn free_objects(self: *Self) void {
+        var object = self.objects;
+        while (object) |obj| {
+            const next = obj.next;
+            self.free_object(obj);
+            object = next;
+        }
+    }
+
+    fn free_object(self: *Self, object: *Obj) void {
+        switch (object.kind) {
+            .String => {
+                const string = object.as(ObjString);
+                self.allocator.free(string.chars);
+                self.allocator.destroy(string);
+            },
+        }
     }
 
     fn read_byte(self: *Self) u8 {
@@ -72,8 +103,9 @@ pub const Vm = struct {
     }
 
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
+        self.chunk.code.clearRetainingCapacity();
         try self.compiler.compile(source, &self.chunk);
-        errdefer self.deinit();
+        self.ip = self.chunk.code.items.ptr;
 
         try self.run();
     }
@@ -97,31 +129,44 @@ pub const Vm = struct {
             if (config.TRACING) {
                 const Dis = @import("disassembler.zig").Disassembler;
                 const dis = Dis.init(self.chunk);
-                const addr1 = @intFromPtr(self.ip);
-                const addr2 = @intFromPtr(self.chunk.code.items.ptr);
-                _ = dis.dis_instruction(addr1 - addr2);
+                _ = dis.dis_instruction(self.instruction_nb());
             }
 
             const instruction = self.read_byte();
             const op_code: OpCode = @enumFromInt(instruction);
 
             switch (op_code) {
+                .Add => self.stack.push(try self.binop('+')),
                 .Constant => {
                     const value = self.chunk.read_constant(self.read_byte());
                     self.stack.push(value);
                 },
-                .Add => self.stack.push(self.binop('+')),
-                .Subtract => self.stack.push(self.binop('-')),
-                .Multiply => self.stack.push(self.binop('*')),
-                .Divide => self.stack.push(self.binop('/')),
+                .Divide => self.stack.push(try self.binop('/')),
+                .Equal => {
+                    const v1 = self.stack.pop();
+                    const v2 = self.stack.pop();
+                    self.stack.push(Value.bool_(v1.equals(v2)));
+                },
+                .False => self.stack.push(Value.bool_(false)),
+                .Greater => self.stack.push(try self.binop('>')),
+                .Less => self.stack.push(try self.binop('<')),
+                .Multiply => self.stack.push(try self.binop('*')),
                 .Negate => {
                     // PERF: https://craftinginterpreters.com/a-virtual-machine.html#challenges [4]
                     const value = self.stack.pop();
                     switch (value) {
-                        .Int => |v| self.stack.push(.{ .Int = -v }),
-                        .Float => |v| self.stack.push(.{ .Float = -v }),
-                        else => @panic("Can't negate anything else than a number"),
+                        .Int => |v| self.stack.push(Value.int(-v)),
+                        .Float => |v| self.stack.push(Value.float(-v)),
+                        else => self.runtime_err("operand must be a number"),
                     }
+                },
+                .Null => self.stack.push(Value.null_()),
+                .Not => {
+                    const value = self.stack.pop().as_bool() orelse {
+                        self.runtime_err("operator '!' can only be used with bool operand");
+                        return error.RuntimeErr;
+                    };
+                    self.stack.push(Value.bool_(!value));
                 },
                 .Return => {
                     const value = self.stack.pop();
@@ -129,24 +174,32 @@ pub const Vm = struct {
                     print("\n", .{});
                     return;
                 },
+                .Subtract => self.stack.push(try self.binop('-')),
+                .True => self.stack.push(Value.bool_(true)),
             }
         }
     }
 
-    fn binop(self: *Self, op: u8) Value {
+    fn binop(self: *Self, op: u8) Allocator.Error!Value {
         const v2 = self.stack.pop();
         const v1 = self.stack.pop();
 
+        if (v1 == .Obj and v2 == .Obj) {
+            return try self.concatenate(v1, v2);
+        }
+
         if (v1 == .Int and v2 != .Int or v1 == .Float and v2 != .Float) {
-            @panic("Binary operation only allowed between ints or floats");
+            self.runtime_err("binary operation only allowed between ints or floats");
         }
 
         if (v1 == .Int and v2 == .Int) {
             return switch (op) {
-                '+' => .{ .Int = v1.Int + v2.Int },
+                '+' => Value.int(v1.Int + v2.Int),
                 '-' => .{ .Int = v1.Int - v2.Int },
                 '*' => .{ .Int = v1.Int * v2.Int },
                 '/' => .{ .Int = @divTrunc(v1.Int, v2.Int) },
+                '<' => Value.bool_(v1.Int < v2.Int),
+                '>' => Value.bool_(v1.Int > v2.Int),
                 else => unreachable,
             };
         }
@@ -157,10 +210,35 @@ pub const Vm = struct {
                 '-' => .{ .Float = v1.Float - v2.Float },
                 '*' => .{ .Float = v1.Float * v2.Float },
                 '/' => .{ .Float = v1.Float / v2.Float },
+                '<' => Value.bool_(v1.Float < v2.Float),
+                '>' => Value.bool_(v1.Float > v2.Float),
                 else => unreachable,
             };
         }
 
         unreachable;
+    }
+
+    fn concatenate(self: *Self, str1: Value, str2: Value) Allocator.Error!Value {
+        const obj1 = str1.as_obj().?.as(ObjString);
+        const obj2 = str2.as_obj().?.as(ObjString);
+
+        const res = try self.allocator.alloc(u8, obj1.chars.len + obj2.chars.len);
+        @memcpy(res[0..obj1.chars.len], obj1.chars);
+        @memcpy(res[obj1.chars.len..], obj2.chars);
+
+        return Value.obj((try ObjString.create(self, res)).as_obj());
+    }
+
+    fn runtime_err(self: *const Self, msg: []const u8) void {
+        const line = self.chunk.lines.items[self.instruction_nb()];
+        print("[line {}] in script: {s}\n", .{ line, msg });
+        // TODO: in repl mode, the stack is corrupted if we don't stop execution
+    }
+
+    fn instruction_nb(self: *const Self) usize {
+        const addr1 = @intFromPtr(self.ip);
+        const addr2 = @intFromPtr(self.chunk.code.items.ptr);
+        return addr1 - addr2;
     }
 };
