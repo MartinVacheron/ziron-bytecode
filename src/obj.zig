@@ -39,11 +39,13 @@ pub const Obj = struct {
 pub const ObjString = struct {
     obj: Obj,
     chars: []const u8,
+    hash: u32,
 
     // PERF: lexible array member: https://craftinginterpreters.com/strings.html#challenges
     pub fn create(vm: *Vm, str: []const u8) Allocator.Error!*ObjString {
         var obj = try Obj.allocate(vm, ObjString, .String);
         obj.chars = str;
+        obj.hash = ObjString.hash_string(str);
         return obj;
     }
 
@@ -59,5 +61,15 @@ pub const ObjString = struct {
 
     pub fn eq(self: *const ObjString, other: *const ObjString) bool {
         return std.mem.eql(u8, self.chars, other.chars);
+    }
+
+    fn hash_string(chars: []const u8) u32 {
+        var hash: u32 = 2166136261;
+        for (chars) |c| {
+            hash ^= c;
+            hash *%= 16777619;
+        }
+
+        return hash;
     }
 };

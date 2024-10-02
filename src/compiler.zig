@@ -280,7 +280,7 @@ pub const Compiler = struct {
     fn string(self: *Self) Allocator.Error!void {
         const lexeme = self.parser.previous.lexeme;
         // Skip quotes
-        const object = try ObjString.create(self.vm, lexeme[1 .. lexeme.len - 1]);
+        const object = try ObjString.copy(self.vm, lexeme[1 .. lexeme.len - 1]);
         const value = Value.obj(object.as_obj());
 
         try self.emit_constant(value);
