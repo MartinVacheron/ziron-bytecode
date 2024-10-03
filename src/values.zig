@@ -79,7 +79,8 @@ pub const Value = union(enum) {
             .Obj => {
                 const str1 = self.as_obj().?.as(ObjString);
                 const str2 = other.as_obj().?.as(ObjString);
-                return str1.eq(str2);
+                // Pointer comparison since we intern strings
+                return str1 == str2;
             },
         };
     }
@@ -94,3 +95,22 @@ pub const Value = union(enum) {
         }
     }
 };
+
+test "interning" {
+    const Vm = @import("vm.zig").Vm;
+    const allocator = std.testing.allocator;
+
+    var vm = Vm.new(allocator);
+    vm.init();
+    defer vm.deinit();
+
+    const str1 = try vm.allocator.alloc(u8, 4);
+    @memcpy(str1, "mars");
+    const str2 = try vm.allocator.alloc(u8, 4);
+    @memcpy(str2, "mars");
+
+    _ = try ObjString.take(&vm, str1);
+    _ = try ObjString.take(&vm, str2);
+
+    try std.testing.expectEqual(vm.strings.count, 1);
+}

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Vm = @import("vm.zig").Vm;
+const Value = @import("values.zig").Value;
 
 pub const Obj = struct {
     kind: ObjKind,
@@ -42,25 +43,44 @@ pub const ObjString = struct {
     hash: u32,
 
     // PERF: lexible array member: https://craftinginterpreters.com/strings.html#challenges
-    pub fn create(vm: *Vm, str: []const u8) Allocator.Error!*ObjString {
+    pub fn create(vm: *Vm, str: []const u8, hash: u32) Allocator.Error!*ObjString {
         var obj = try Obj.allocate(vm, ObjString, .String);
         obj.chars = str;
-        obj.hash = ObjString.hash_string(str);
+        obj.hash = hash;
+
+        _ = try vm.strings.set(obj, Value.null_());
+
         return obj;
     }
 
     pub fn copy(vm: *Vm, str: []const u8) Allocator.Error!*ObjString {
+        const hash = ObjString.hash_string(str);
+        const interned = vm.strings.find_string(str, hash);
+
+        if (interned) |i| return i;
+
         const chars = try vm.allocator.alloc(u8, str.len);
         @memcpy(chars, str);
-        try ObjString.create(vm, chars);
+
+        return ObjString.create(vm, chars, hash);
+    }
+
+    // Take a string allocated by calling Vm. If interned already, free
+    // the memory and return the interned one
+    pub fn take(vm: *Vm, str: []const u8) Allocator.Error!*ObjString {
+        const hash = ObjString.hash_string(str);
+        const interned = vm.strings.find_string(str, hash);
+
+        if (interned) |i| {
+            vm.allocator.free(str);
+            return i;
+        }
+
+        return ObjString.create(vm, str, hash);
     }
 
     pub fn as_obj(self: *ObjString) *Obj {
         return &self.obj;
-    }
-
-    pub fn eq(self: *const ObjString, other: *const ObjString) bool {
-        return std.mem.eql(u8, self.chars, other.chars);
     }
 
     fn hash_string(chars: []const u8) u32 {

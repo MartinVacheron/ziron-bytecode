@@ -7,6 +7,7 @@ const Value = @import("values.zig").Value;
 const Compiler = @import("compiler.zig").Compiler;
 const Obj = @import("obj.zig").Obj;
 const ObjString = @import("obj.zig").ObjString;
+const Table = @import("table.zig").Table;
 const config = @import("config");
 
 const Stack = struct {
@@ -49,6 +50,7 @@ pub const Vm = struct {
     compiler: Compiler,
     allocator: Allocator,
     objects: ?*Obj,
+    strings: Table,
 
     const Self = @This();
 
@@ -64,6 +66,7 @@ pub const Vm = struct {
             .compiler = Compiler.new(),
             .allocator = allocator,
             .objects = null,
+            .strings = Table.init(allocator),
         };
     }
 
@@ -75,6 +78,7 @@ pub const Vm = struct {
     pub fn deinit(self: *Self) void {
         self.chunk.deinit();
         self.free_objects();
+        self.strings.deinit();
     }
 
     fn free_objects(self: *Self) void {
@@ -227,7 +231,7 @@ pub const Vm = struct {
         @memcpy(res[0..obj1.chars.len], obj1.chars);
         @memcpy(res[obj1.chars.len..], obj2.chars);
 
-        return Value.obj((try ObjString.create(self, res)).as_obj());
+        return Value.obj((try ObjString.take(self, res)).as_obj());
     }
 
     fn runtime_err(self: *const Self, msg: []const u8) void {
@@ -242,3 +246,33 @@ pub const Vm = struct {
         return addr1 - addr2;
     }
 };
+
+test "interning" {
+    const allocator = std.testing.allocator;
+
+    var vm = Vm.new(allocator);
+    vm.init();
+    defer vm.deinit();
+
+    const str1 = try vm.allocator.alloc(u8, 4);
+    @memcpy(str1, "mars");
+    const str2 = try vm.allocator.alloc(u8, 4);
+    @memcpy(str2, "mars");
+
+    _ = try ObjString.take(&vm, str1);
+    _ = try ObjString.take(&vm, str2);
+
+    try std.testing.expectEqual(vm.strings.count, 1);
+
+    const str3 = try vm.allocator.alloc(u8, 4);
+    @memcpy(str3, "moon");
+    _ = try ObjString.take(&vm, str3);
+
+    try std.testing.expectEqual(vm.strings.count, 2);
+
+    _ = try ObjString.copy(&vm, "moon");
+    try std.testing.expectEqual(vm.strings.count, 2);
+
+    _ = try ObjString.copy(&vm, "jupyter");
+    try std.testing.expectEqual(vm.strings.count, 3);
+}
