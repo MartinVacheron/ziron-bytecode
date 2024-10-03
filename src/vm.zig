@@ -51,12 +51,13 @@ pub const Vm = struct {
     allocator: Allocator,
     objects: ?*Obj,
     strings: Table,
+    globals: Table,
 
     const Self = @This();
 
     const VmErr = error{
         RuntimeErr,
-    } || Compiler.CompileErr;
+    } || Compiler.CompileErr || std.fmt.BufPrintError;
 
     pub fn new(allocator: Allocator) Self {
         return .{
@@ -67,6 +68,7 @@ pub const Vm = struct {
             .allocator = allocator,
             .objects = null,
             .strings = Table.init(allocator),
+            .globals = Table.init(allocator),
         };
     }
 
@@ -79,6 +81,7 @@ pub const Vm = struct {
         self.chunk.deinit();
         self.free_objects();
         self.strings.deinit();
+        self.globals.deinit();
     }
 
     fn free_objects(self: *Self) void {
@@ -104,6 +107,14 @@ pub const Vm = struct {
         const byte = self.ip[0];
         self.ip += 1;
         return byte;
+    }
+
+    fn read_constant(self: *Self) Value {
+        return self.chunk.constants.items[self.read_byte()];
+    }
+
+    fn read_string(self: *Self) *ObjString {
+        return self.read_constant().as_obj().?.as(ObjString);
     }
 
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
@@ -142,8 +153,13 @@ pub const Vm = struct {
             switch (op_code) {
                 .Add => self.stack.push(try self.binop('+')),
                 .Constant => {
-                    const value = self.chunk.read_constant(self.read_byte());
+                    const value = self.read_constant();
                     self.stack.push(value);
+                },
+                .DefineGlobal => {
+                    const name = self.read_string();
+                    // NOTE: we don't check if field exists already, we can redefine same global
+                    _ = try self.globals.set(name, self.stack.pop());
                 },
                 .Divide => self.stack.push(try self.binop('/')),
                 .Equal => {
@@ -152,6 +168,17 @@ pub const Vm = struct {
                     self.stack.push(Value.bool_(v1.equals(v2)));
                 },
                 .False => self.stack.push(Value.bool_(false)),
+                .GetGlobal => {
+                    const name = self.read_string();
+                    const value = self.globals.get(name) orelse {
+                        var buf: [250]u8 = undefined;
+                        _ = try std.fmt.bufPrint(&buf, "undeclared variable: {s}\n", .{name.chars});
+                        self.runtime_err(&buf);
+                        return error.RuntimeErr;
+                    };
+
+                    self.stack.push(value);
+                },
                 .Greater => self.stack.push(try self.binop('>')),
                 .Less => self.stack.push(try self.binop('<')),
                 .Multiply => self.stack.push(try self.binop('*')),
@@ -172,12 +199,13 @@ pub const Vm = struct {
                     };
                     self.stack.push(Value.bool_(!value));
                 },
-                .Return => {
+                .Print => {
                     const value = self.stack.pop();
                     value.print(std.debug);
                     print("\n", .{});
-                    return;
                 },
+                .Pop => _ = self.stack.pop(),
+                .Return => return,
                 .Subtract => self.stack.push(try self.binop('-')),
                 .True => self.stack.push(Value.bool_(true)),
             }

@@ -50,14 +50,25 @@ const Parser = struct {
         while (true) {
             self.current = self.lexer.lex();
 
-            if (self.current.kind != .Error) break;
+            if (!self.check(.Error)) break;
 
             self.error_at_current(self.current.lexeme);
         }
     }
 
+    fn match(self: *Self, kind: TokenKind) bool {
+        if (!self.check(kind)) return false;
+
+        self.advance();
+        return true;
+    }
+
+    fn check(self: *Self, kind: TokenKind) bool {
+        return self.current.kind == kind;
+    }
+
     fn consume(self: *Self, kind: TokenKind, msg: []const u8) void {
-        if (self.current.kind == kind) {
+        if (self.check(kind)) {
             self.advance();
             return;
         }
@@ -66,7 +77,7 @@ const Parser = struct {
     }
 
     fn skip_new_lines(self: *Self) void {
-        while (self.current.kind == .NewLine) {
+        while (self.check(.NewLine)) {
             self.advance();
         }
     }
@@ -94,6 +105,17 @@ const Parser = struct {
         print(": {s}\n", .{msg});
 
         self.had_error = true;
+    }
+
+    fn synchronize(self: *Self) void {
+        self.panic_mode = false;
+
+        while (!self.check(.Eof)) {
+            switch (self.current.kind) {
+                .Fn, .For, .If, .Print, .Return, .Struct, .Var, .While => return,
+                else => self.advance(),
+            }
+        }
     }
 };
 
@@ -132,7 +154,7 @@ pub const Compiler = struct {
         .For = ParseRule{},
         .Greater = ParseRule{ .infix = Self.binary, .precedence = .Comparison },
         .GreaterEqual = ParseRule{ .infix = Self.binary, .precedence = .Comparison },
-        .Identifier = ParseRule{},
+        .Identifier = ParseRule{ .prefix = Self.variable },
         .If = ParseRule{},
         .In = ParseRule{},
         .Int = ParseRule{ .prefix = Self.int },
@@ -171,25 +193,26 @@ pub const Compiler = struct {
         self.vm = vm;
     }
 
+    // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
     pub fn compile(self: *Self, source: []const u8, chunk: *Chunk) CompileErr!void {
         self.chunk = chunk;
         self.parser.lexer.init(source);
         self.parser.advance();
-        try self.expression();
 
-        self.parser.consume(.Eof, "expected end of expression");
+        while (!self.parser.match(.Eof)) {
+            try self.declaration();
+
+            if (self.parser.panic_mode) self.parser.synchronize();
+
+            // TODO: look for a system that forces for a newline
+            // it must interact well the Repl (each line ends with
+            // a .Eof). Maybe insert a newline in Repl inputs?
+            self.parser.skip_new_lines();
+        }
 
         try self.end_compiler();
 
         if (self.parser.had_error) return error.CompileErr;
-    }
-
-    // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
-
-    fn expression(self: *Self) Allocator.Error!void {
-        self.parser.skip_new_lines();
-        try self.parse_precedence(.Assignment);
-        self.parser.skip_new_lines();
     }
 
     fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {
@@ -215,6 +238,66 @@ pub const Compiler = struct {
 
     fn get_rule(kind: TokenKind) *const ParseRule {
         return parser_rule_table.getPtrConst(kind);
+    }
+
+    fn parse_variable(self: *Self, msg: []const u8) Allocator.Error!u8 {
+        self.parser.consume(.Identifier, msg);
+        return self.identifier_constant(&self.parser.previous);
+    }
+
+    fn identifier_constant(self: *Self, name: *const Token) Allocator.Error!u8 {
+        const str = try ObjString.copy(self.vm, name.lexeme);
+        return self.make_constant(Value.obj(str.as_obj()));
+    }
+
+    fn define_variable(self: *Self, global_id: u8) Allocator.Error!void {
+        try self.emit_bytes_u8(.DefineGlobal, global_id);
+    }
+
+    fn declaration(self: *Self) Allocator.Error!void {
+        if (self.parser.match(.Var)) {
+            try self.var_declaration();
+        } else {
+            try self.statement();
+        }
+    }
+
+    fn var_declaration(self: *Self) Allocator.Error!void {
+        const global_id = try self.parse_variable("expect variable name");
+
+        if (self.parser.match(.Equal)) {
+            try self.expression();
+        } else {
+            try self.emit_byte(.Null);
+        }
+
+        self.parser.consume(.NewLine, "expect new line after variable declaration");
+        try self.define_variable(global_id);
+    }
+
+    fn statement(self: *Self) Allocator.Error!void {
+        if (self.parser.match(.Print)) {
+            try self.print_statement();
+        } else {
+            try self.expression_statement();
+        }
+    }
+
+    fn print_statement(self: *Self) Allocator.Error!void {
+        try self.expression();
+        try self.emit_byte(.Print);
+    }
+
+    // In the book, expr_stmt is: expr + ;
+    // For us, no difference. The Pop is because the result of expr
+    // is not used, because it's a statement like: brunch = "quiche"
+    fn expression_statement(self: *Self) Allocator.Error!void {
+        try self.expression();
+        try self.emit_byte(.Pop);
+    }
+
+    fn expression(self: *Self) Allocator.Error!void {
+        try self.parse_precedence(.Assignment);
     }
 
     fn grouping(self: *Self) Allocator.Error!void {
@@ -284,6 +367,15 @@ pub const Compiler = struct {
         const value = Value.obj(object.as_obj());
 
         try self.emit_constant(value);
+    }
+
+    fn variable(self: *Self) Allocator.Error!void {
+        try self.named_variable(&self.parser.previous);
+    }
+
+    fn named_variable(self: *Self, name: *Token) Allocator.Error!void {
+        const var_id = try self.identifier_constant(name);
+        try self.emit_bytes_u8(.GetGlobal, var_id);
     }
 
     fn emit_byte(self: *Self, op: OpCode) Allocator.Error!void {

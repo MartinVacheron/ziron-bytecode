@@ -60,8 +60,11 @@ fn repl(allocator: std.mem.Allocator) !void {
 
         input.clearRetainingCapacity();
         try stdin.streamUntilDelimiter(input.writer(), '\n', null);
-        const trimmed = std.mem.trimRight(u8, input.items, "\r");
+        // const trimmed = std.mem.trimRight(u8, input.items, "\r");
 
-        try vm.interpret(trimmed);
+        try input.append('\n');
+
+        // try vm.interpret(trimmed);
+        try vm.interpret(input.items);
     }
 }

@@ -46,13 +46,13 @@ pub const Table = struct {
         return is_new;
     }
 
-    pub fn get(self: *const Self, key: *const ObjString) ?*Value {
+    pub fn get(self: *const Self, key: *const ObjString) ?Value {
         if (self.count == 0) return null;
 
         const entry = Table.find_entry(self.entries, key);
 
         if (entry.key == null) return null;
-        return &entry.value;
+        return entry.value;
     }
 
     // We don't decrement self.count to take into account for grow
