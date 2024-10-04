@@ -11,6 +11,7 @@ pub const OpCode = enum(u8) {
     Equal,
     False,
     GetGlobal,
+    GetLocal,
     Greater,
     Less,
     Multiply,
@@ -20,10 +21,13 @@ pub const OpCode = enum(u8) {
     Pop,
     Print,
     Return,
+    SetGlobal,
+    SetLocal,
     Subtract,
     True,
 };
 
+// PERF: make constant a fixed size array
 pub const Chunk = struct {
     code: std.ArrayList(u8),
     lines: std.ArrayList(u8),

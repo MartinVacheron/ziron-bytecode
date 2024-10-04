@@ -28,6 +28,7 @@ pub const Table = struct {
         self.allocator.free(self.entries);
     }
 
+    /// Returns if the inserted key is new
     pub fn set(self: *Self, key: *ObjString, value: Value) Allocator.Error!bool {
         // Encodes a 75%
         if (4 * (self.count + 1) > 3 * self.entries.len) {
@@ -55,8 +56,9 @@ pub const Table = struct {
         return entry.value;
     }
 
+    /// Returns true if it was deleted
     // We don't decrement self.count to take into account for grow
-    fn delete(self: *Self, key: *const ObjString) bool {
+    pub fn delete(self: *Self, key: *const ObjString) bool {
         if (self.count == 0) return false;
 
         const entry = Table.find_entry(self.entries, key);

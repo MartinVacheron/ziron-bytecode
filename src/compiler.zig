@@ -119,10 +119,18 @@ const Parser = struct {
     }
 };
 
+const Local = struct {
+    name: *const Token,
+    depth: isize,
+};
+
 pub const Compiler = struct {
     parser: Parser,
     chunk: *Chunk,
     vm: *Vm,
+    locals: [std.math.maxInt(u8) + 1]Local,
+    local_count: u8,
+    scope_depth: usize,
 
     const Self = @This();
 
@@ -131,8 +139,8 @@ pub const Compiler = struct {
     } || Allocator.Error;
 
     const ParseRule = struct {
-        prefix: ?*const fn (*Compiler) Allocator.Error!void = null,
-        infix: ?*const fn (*Compiler) Allocator.Error!void = null,
+        prefix: ?*const fn (*Compiler, bool) Allocator.Error!void = null,
+        infix: ?*const fn (*Compiler, bool) Allocator.Error!void = null,
         precedence: Precedence = .None,
     };
 
@@ -186,6 +194,9 @@ pub const Compiler = struct {
             .parser = Parser.init(),
             .chunk = undefined,
             .vm = undefined,
+            .locals = [_]Local{.{ .name = undefined, .depth = 0 }} ** 256,
+            .local_count = 0,
+            .scope_depth = 0,
         };
     }
 
@@ -200,14 +211,11 @@ pub const Compiler = struct {
         self.parser.advance();
 
         while (!self.parser.match(.Eof)) {
+            self.parser.skip_new_lines();
             try self.declaration();
+            self.parser.skip_new_lines();
 
             if (self.parser.panic_mode) self.parser.synchronize();
-
-            // TODO: look for a system that forces for a newline
-            // it must interact well the Repl (each line ends with
-            // a .Eof). Maybe insert a newline in Repl inputs?
-            self.parser.skip_new_lines();
         }
 
         try self.end_compiler();
@@ -222,7 +230,9 @@ pub const Compiler = struct {
             return;
         };
 
-        try prefix_rule(self);
+        // We can assign only if already in assignment or expr_stmt
+        const can_assign = @intFromEnum(precedence) <= @intFromEnum(Precedence.Assignment);
+        try prefix_rule(self, can_assign);
 
         while (@intFromEnum(precedence) <= @intFromEnum(get_rule(self.parser.current.kind).precedence)) {
             self.parser.advance();
@@ -232,7 +242,14 @@ pub const Compiler = struct {
                 return;
             };
 
-            try infix_rule(self);
+            try infix_rule(self, can_assign);
+        }
+
+        // If we went through all the loop and that we tried to assign with
+        // a wrong target, nobody will have consumed the '='. It means the
+        // assignment target was invalid
+        if (can_assign and self.parser.match(.Equal)) {
+            self.parser.err("invalid assignment target");
         }
     }
 
@@ -240,21 +257,113 @@ pub const Compiler = struct {
         return parser_rule_table.getPtrConst(kind);
     }
 
+    fn begin_scope(self: *Self) void {
+        self.scope_depth += 1;
+    }
+
+    fn end_scope(self: *Self) Allocator.Error!void {
+        // self.scope_depth -= 1;
+
+        while (self.local_count > 0 and self.locals[self.local_count - 1].depth > self.scope_depth) {
+            try self.emit_byte(.Pop);
+            self.local_count -= 1;
+        }
+    }
+
+    /// Consume variable lexeme and add it to the chunk's constants
+    /// Returns its index
     fn parse_variable(self: *Self, msg: []const u8) Allocator.Error!u8 {
         self.parser.consume(.Identifier, msg);
+
+        self.declare_variable();
+        if (self.scope_depth > 0) return 0;
+
         return self.identifier_constant(&self.parser.previous);
     }
 
+    fn declare_variable(self: *Self) void {
+        if (self.scope_depth == 0) return;
+
+        const token = &self.parser.previous;
+
+        var i: u8 = self.local_count;
+        while (i >= 0) : (i -= 1) {
+            const local = self.locals[i];
+
+            if (local.depth != -1 and local.depth < self.scope_depth) break;
+
+            if (Compiler.identifier_equal(token.lexeme, local.name.lexeme)) {
+                self.parser.err("already a variable with this name in this scope");
+            }
+        }
+
+        self.add_local(token);
+    }
+
+    /// Creates a ObjString value and store it in the chunk's constants
+    /// Returns its index
     fn identifier_constant(self: *Self, name: *const Token) Allocator.Error!u8 {
         const str = try ObjString.copy(self.vm, name.lexeme);
         return self.make_constant(Value.obj(str.as_obj()));
     }
 
+    fn identifier_equal(name1: []const u8, name2: []const u8) bool {
+        if (name1.len != name2.len) return false;
+        return std.mem.eql(u8, name1, name2);
+    }
+
+    fn add_local(self: *Self, name: *const Token) void {
+        if (self.local_count == std.math.maxInt(u8) + 1) {
+            self.parser.err("too many local variables in function");
+            return;
+        }
+
+        var local = &self.locals[self.local_count];
+        local.name = name;
+        local.depth = -1; // Sentinel value to mark it uninitialized
+        self.local_count += 1;
+    }
+
+    // i16 because we can return a -1 and otherwise it's all values for u8
+    fn resolve_local(self: *Self, token: *const Token) i16 {
+        var i: u8 = self.local_count;
+
+        // NOTE: in book, >= 0, but if it is 0, there is no local
+        while (i > 0) : (i -= 1) {
+            const local = &self.locals[i - 1];
+
+            if (Compiler.identifier_equal(local.name.lexeme, token.lexeme)) {
+                if (local.depth == -1) {
+                    self.parser.err("can't read local variable in its own initializer");
+                }
+
+                return @intCast(i - 1);
+            }
+        }
+
+        return -1;
+    }
+
+    // PERF: define multiple time the same one potentially
+    // https://craftinginterpreters.com/global-variables.html#challenges [1]
     fn define_variable(self: *Self, global_id: u8) Allocator.Error!void {
+        // Local variable are automatically implicitly created when
+        // we parse its initializer. It's right on top of the stack
+        if (self.scope_depth > 0) {
+            self.mark_initialized();
+            return;
+        }
+
         try self.emit_bytes_u8(.DefineGlobal, global_id);
     }
 
+    fn mark_initialized(self: *Self) void {
+        self.locals[self.local_count - 1].depth = @intCast(self.scope_depth);
+    }
+
     fn declaration(self: *Self) Allocator.Error!void {
+        self.parser.skip_new_lines();
+
         if (self.parser.match(.Var)) {
             try self.var_declaration();
         } else {
@@ -278,6 +387,10 @@ pub const Compiler = struct {
     fn statement(self: *Self) Allocator.Error!void {
         if (self.parser.match(.Print)) {
             try self.print_statement();
+        } else if (self.parser.match(.LeftBrace)) {
+            self.begin_scope();
+            try self.block();
+            try self.end_scope();
         } else {
             try self.expression_statement();
         }
@@ -286,6 +399,18 @@ pub const Compiler = struct {
     fn print_statement(self: *Self) Allocator.Error!void {
         try self.expression();
         try self.emit_byte(.Print);
+    }
+
+    fn block(self: *Self) Allocator.Error!void {
+        // Empty block
+        self.parser.skip_new_lines();
+
+        while (!self.parser.check(.RightBrace) and !self.parser.check(.Eof)) {
+            try self.declaration();
+            self.parser.skip_new_lines();
+        }
+
+        self.parser.consume(.RightBrace, "expect '}' after block");
     }
 
     // In the book, expr_stmt is: expr + ;
@@ -300,12 +425,12 @@ pub const Compiler = struct {
         try self.parse_precedence(.Assignment);
     }
 
-    fn grouping(self: *Self) Allocator.Error!void {
+    fn grouping(self: *Self, _: bool) Allocator.Error!void {
         try self.expression();
         self.parser.consume(.RightParen, "expect ')' after expression");
     }
 
-    fn binary(self: *Self) Allocator.Error!void {
+    fn binary(self: *Self, _: bool) Allocator.Error!void {
         const operator = self.parser.previous.kind;
         const rule = get_rule(operator);
 
@@ -328,7 +453,7 @@ pub const Compiler = struct {
         };
     }
 
-    fn unary(self: *Self) Allocator.Error!void {
+    fn unary(self: *Self, _: bool) Allocator.Error!void {
         const operator = self.parser.previous.kind;
         try self.parse_precedence(.Unary);
 
@@ -339,7 +464,7 @@ pub const Compiler = struct {
         };
     }
 
-    fn literal(self: *Self) Allocator.Error!void {
+    fn literal(self: *Self, _: bool) Allocator.Error!void {
         try switch (self.parser.previous.kind) {
             .False => self.emit_byte(.False),
             .Null => self.emit_byte(.Null),
@@ -348,19 +473,19 @@ pub const Compiler = struct {
         };
     }
 
-    fn int(self: *Self) Allocator.Error!void {
+    fn int(self: *Self, _: bool) Allocator.Error!void {
         const prev = self.parser.previous.lexeme;
         const value = std.fmt.parseInt(i64, prev, 10) catch unreachable;
         try self.emit_constant(Value.int(value));
     }
 
-    fn float(self: *Self) Allocator.Error!void {
+    fn float(self: *Self, _: bool) Allocator.Error!void {
         const prev = self.parser.previous.lexeme;
         const value = std.fmt.parseFloat(f64, prev) catch unreachable;
         try self.emit_constant(Value.float(value));
     }
 
-    fn string(self: *Self) Allocator.Error!void {
+    fn string(self: *Self, _: bool) Allocator.Error!void {
         const lexeme = self.parser.previous.lexeme;
         // Skip quotes
         const object = try ObjString.copy(self.vm, lexeme[1 .. lexeme.len - 1]);
@@ -369,13 +494,32 @@ pub const Compiler = struct {
         try self.emit_constant(value);
     }
 
-    fn variable(self: *Self) Allocator.Error!void {
-        try self.named_variable(&self.parser.previous);
+    fn variable(self: *Self, can_assign: bool) Allocator.Error!void {
+        try self.named_variable(&self.parser.previous, can_assign);
     }
 
-    fn named_variable(self: *Self, name: *Token) Allocator.Error!void {
-        const var_id = try self.identifier_constant(name);
-        try self.emit_bytes_u8(.GetGlobal, var_id);
+    /// Creates a local or global variable and a Set/Get OpCode
+    fn named_variable(self: *Self, name: *const Token, can_assign: bool) Allocator.Error!void {
+        var var_id = self.resolve_local(name);
+        // NOTE: initialize with local and just (if (.. == -1)) ?
+        var set_op: OpCode = undefined;
+        var get_op: OpCode = undefined;
+
+        if (var_id != -1) {
+            set_op = .SetLocal;
+            get_op = .GetLocal;
+        } else {
+            var_id = try self.identifier_constant(name);
+            set_op = .SetGlobal;
+            get_op = .GetGlobal;
+        }
+
+        if (can_assign and self.parser.match(.Equal)) {
+            try self.expression();
+            try self.emit_bytes_u8(set_op, @intCast(var_id));
+        } else {
+            try self.emit_bytes_u8(get_op, @intCast(var_id));
+        }
     }
 
     fn emit_byte(self: *Self, op: OpCode) Allocator.Error!void {
@@ -416,8 +560,11 @@ pub const Compiler = struct {
         try self.emit_bytes_u8(.Constant, try self.make_constant(value));
     }
 
+    /// Writes a constant to the chunk. Returns its index
     fn make_constant(self: *Self, value: Value) Allocator.Error!u8 {
         const constant = try self.chunk.write_constant(value);
+
+        // NOTE: for now, unnecessary check because it writes to an ArrayList
         if (constant > std.math.maxInt(u8)) {
             self.parser.err("too many constants in one chunk");
             return 0;

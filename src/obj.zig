@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Vm = @import("vm.zig").Vm;
 const Value = @import("values.zig").Value;
@@ -23,7 +24,10 @@ pub const Obj = struct {
     }
 
     pub fn as(self: *Obj, comptime T: type) *T {
+        comptime assert(@hasField(T, "obj"));
+
         // Obj is aligned on 1 byte, *T on 8 (i beleve this is why its mandatory)
+        // NOTE: Why is it aligned 1 byte?
         return @alignCast(@fieldParentPtr("obj", self));
     }
 
@@ -42,7 +46,7 @@ pub const ObjString = struct {
     chars: []const u8,
     hash: u32,
 
-    // PERF: lexible array member: https://craftinginterpreters.com/strings.html#challenges
+    // PERF: flexible array member: https://craftinginterpreters.com/strings.html#challenges
     pub fn create(vm: *Vm, str: []const u8, hash: u32) Allocator.Error!*ObjString {
         var obj = try Obj.allocate(vm, ObjString, .String);
         obj.chars = str;

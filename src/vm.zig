@@ -38,8 +38,9 @@ const Stack = struct {
         return self.top[0];
     }
 
-    fn peek(self: *const Self, distance: usize) *const Value {
-        return &self.top[-1 - distance];
+    fn peek(self: *const Self, distance: usize) Value {
+        // Pointer arithmetic
+        return (self.top - 1 - distance)[0];
     }
 };
 
@@ -143,7 +144,7 @@ pub const Vm = struct {
             // if not needed (equivalent of #ifdef or #[cfg(feature...)])
             if (config.TRACING) {
                 const Dis = @import("disassembler.zig").Disassembler;
-                const dis = Dis.init(self.chunk);
+                const dis = Dis.init(&self.chunk);
                 _ = dis.dis_instruction(self.instruction_nb());
             }
 
@@ -168,6 +169,8 @@ pub const Vm = struct {
                     self.stack.push(Value.bool_(v1.equals(v2)));
                 },
                 .False => self.stack.push(Value.bool_(false)),
+                // PERF: lookup differently the globals, like locals. Much more faster
+                // https://craftinginterpreters.com/global-variables.html#challenges [2]
                 .GetGlobal => {
                     const name = self.read_string();
                     const value = self.globals.get(name) orelse {
@@ -178,6 +181,10 @@ pub const Vm = struct {
                     };
 
                     self.stack.push(value);
+                },
+                .GetLocal => {
+                    const index = self.read_byte();
+                    self.stack.push(self.stack.peek(index));
                 },
                 .Greater => self.stack.push(try self.binop('>')),
                 .Less => self.stack.push(try self.binop('<')),
@@ -206,6 +213,23 @@ pub const Vm = struct {
                 },
                 .Pop => _ = self.stack.pop(),
                 .Return => return,
+                .SetGlobal => {
+                    const name = self.read_string();
+
+                    // Peek here because assignemnt is an expression, we leave it on the stack
+                    if (try self.globals.set(name, self.stack.peek(0))) {
+                        _ = self.globals.delete(name);
+
+                        var buf: [250]u8 = undefined;
+                        _ = try std.fmt.bufPrint(&buf, "undeclared variable: {s}\n", .{name.chars});
+                        self.runtime_err(&buf);
+                        return error.RuntimeErr;
+                    }
+                },
+                .SetLocal => {
+                    const index = self.read_byte();
+                    self.stack.values[index] = self.stack.peek(0);
+                },
                 .Subtract => self.stack.push(try self.binop('-')),
                 .True => self.stack.push(Value.bool_(true)),
             }

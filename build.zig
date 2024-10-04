@@ -22,10 +22,13 @@ pub fn build(b: *std.Build) void {
     options.addOption(@TypeOf(opts.print_stack), "PRINT_STACK", opts.print_stack);
     options.addOption(@TypeOf(opts.print_code), "PRINT_CODE", opts.print_code);
 
+    const optimization = b.standardOptimizeOption(.{});
+
     const exe = b.addExecutable(.{
         .name = "rizon",
         .root_source_file = b.path("src/main.zig"),
         .target = b.host,
+        .optimize = optimization,
     });
     exe.root_module.addOptions("config", options);
 

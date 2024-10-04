@@ -41,6 +41,7 @@ pub const Disassembler = struct {
             .Equal => simple_instruction("OP_EQUAL", offset),
             .False => simple_instruction("OP_FALSE", offset),
             .GetGlobal => self.constant_instruction("OP_GET_GLOBAL", offset),
+            .GetLocal => self.byte_instruction("OP_GET_LOCAL", offset),
             .Greater => simple_instruction("OP_GREATER", offset),
             .Less => simple_instruction("OP_LESS", offset),
             .Multiply => simple_instruction("OP_MULTIPLY", offset),
@@ -48,8 +49,10 @@ pub const Disassembler = struct {
             .Not => simple_instruction("OP_NOT", offset),
             .Null => simple_instruction("OP_NULL", offset),
             .Pop => simple_instruction("OP_POP", offset),
-            .Print => simple_instruction("PO_PRINT", offset),
+            .Print => simple_instruction("OP_PRINT", offset),
             .Return => simple_instruction("OP_RETURN", offset),
+            .SetGlobal => self.byte_instruction("OP_SET_GLOBAL", offset),
+            .SetLocal => self.constant_instruction("OP_SET_LOCAL", offset),
             .Subtract => simple_instruction("OP_SUBTRACT", offset),
             .True => simple_instruction("OP_TRUE", offset),
         };
@@ -63,9 +66,18 @@ pub const Disassembler = struct {
     fn constant_instruction(self: *const Self, name: []const u8, offset: usize) usize {
         const constant = self.chunk.code.items[offset + 1];
         const value = self.chunk.constants.items[constant];
-        print("{s:<16} {:<4} ", .{ name, constant });
+        print("{s:<16} index: {:<4} value: ", .{ name, constant });
         value.print(std.debug);
         print("\n", .{});
+        return offset + 2;
+    }
+
+    // NOTE: for locals, we don't store their name into the chunk (great for performance
+    // bit bad for introspection). Maybe get a compile time way to do so?
+    fn byte_instruction(self: *const Self, name: []const u8, offset: usize) usize {
+        const index = self.chunk.code.items[offset + 1];
+        print("{s:<16} {:<4} \n", .{ name, index });
+
         return offset + 2;
     }
 };
