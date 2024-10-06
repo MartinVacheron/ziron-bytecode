@@ -5,17 +5,48 @@
 //print breakfast
 
 
-var a = 1
-var b = 2
-{
-    print a
-    print b
+//var a = 1
+//{
+//    print a    // 1
+//    var a = 3
+//    print a    // 3
+//
+//    {
+//        a = 5
+//    }
+//    print a    // 5
+//}
+//print a        // 1
 
-    var a = 3
-    print a
-    {
-        a = 5
-    }
-    print a
+
+//var a = 0
+//{
+//    a = 1
+//    var b = 6
+//    a = b
+//}
+//print a // 6
+
+
+//if true { print "oui" }
+//if true
+//{
+//
+//    print "oiu"}
+//
+//if false { print "oui" } else { print "non" }
+//
+//var if_tests = 3
+//if true { if_tests = 5 } else { if_tests = -8 }
+//print if_tests
+//if false { if_tests = 65 } else { if_tests = -42 }
+//print if_tests
+
+var a = 0
+if true {
+    a = 1
+    var b = 6
+    a = b
+    a = 8
 }
 print a

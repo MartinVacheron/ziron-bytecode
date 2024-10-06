@@ -118,6 +118,13 @@ pub const Vm = struct {
         return self.read_constant().as_obj().?.as(ObjString);
     }
 
+    fn read_short(self: *Self) u16 {
+        const part1 = self.read_byte();
+        const part2 = self.read_byte();
+
+        return (@as(u16, part1) << 8) | part2;
+    }
+
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
         self.chunk.code.clearRetainingCapacity();
         try self.compiler.compile(source, &self.chunk);
@@ -187,6 +194,19 @@ pub const Vm = struct {
                     self.stack.push(self.stack.peek(index));
                 },
                 .Greater => self.stack.push(try self.binop('>')),
+                .Jump => {
+                    const jump = self.read_short();
+                    self.ip += jump;
+                },
+                .JumpIfFalse => {
+                    const jump = self.read_short();
+                    const condition = self.stack.peek(0).as_bool() orelse {
+                        self.runtime_err("condition must be a bool");
+                        return error.RuntimeErr;
+                    };
+
+                    if (!condition) self.ip += jump;
+                },
                 .Less => self.stack.push(try self.binop('<')),
                 .Multiply => self.stack.push(try self.binop('*')),
                 .Negate => {

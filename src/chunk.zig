@@ -13,6 +13,8 @@ pub const OpCode = enum(u8) {
     GetGlobal,
     GetLocal,
     Greater,
+    Jump,
+    JumpIfFalse,
     Less,
     Multiply,
     Negate,

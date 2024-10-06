@@ -11,7 +11,7 @@
             "program": "${workspaceFolder}/zig-out/bin/rizon.exe",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "build"
+            "preLaunchTask": "build",
         },
         {
             "type": "cppvsdbg",

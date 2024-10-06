@@ -76,6 +76,11 @@ const Parser = struct {
         self.error_at_current(msg);
     }
 
+    fn consume_skip(self: *Self, kind: TokenKind, msg: []const u8) void {
+        self.consume(kind, msg);
+        self.skip_new_lines();
+    }
+
     fn skip_new_lines(self: *Self) void {
         while (self.check(.NewLine)) {
             self.advance();
@@ -120,7 +125,7 @@ const Parser = struct {
 };
 
 const Local = struct {
-    name: *const Token,
+    name: []const u8,
     depth: isize,
 };
 
@@ -262,7 +267,7 @@ pub const Compiler = struct {
     }
 
     fn end_scope(self: *Self) Allocator.Error!void {
-        // self.scope_depth -= 1;
+        self.scope_depth -= 1;
 
         while (self.local_count > 0 and self.locals[self.local_count - 1].depth > self.scope_depth) {
             try self.emit_byte(.Pop);
@@ -292,12 +297,12 @@ pub const Compiler = struct {
 
             if (local.depth != -1 and local.depth < self.scope_depth) break;
 
-            if (Compiler.identifier_equal(token.lexeme, local.name.lexeme)) {
+            if (Compiler.identifier_equal(token.lexeme, local.name)) {
                 self.parser.err("already a variable with this name in this scope");
             }
         }
 
-        self.add_local(token);
+        self.add_local(token.lexeme);
     }
 
     /// Creates a ObjString value and store it in the chunk's constants
@@ -312,7 +317,7 @@ pub const Compiler = struct {
         return std.mem.eql(u8, name1, name2);
     }
 
-    fn add_local(self: *Self, name: *const Token) void {
+    fn add_local(self: *Self, name: []const u8) void {
         if (self.local_count == std.math.maxInt(u8) + 1) {
             self.parser.err("too many local variables in function");
             return;
@@ -326,13 +331,16 @@ pub const Compiler = struct {
 
     // i16 because we can return a -1 and otherwise it's all values for u8
     fn resolve_local(self: *Self, token: *const Token) i16 {
+        print("Start resolving local...\n", .{});
         var i: u8 = self.local_count;
+        print("local count: {}\n", .{i});
 
         // NOTE: in book, >= 0, but if it is 0, there is no local
         while (i > 0) : (i -= 1) {
             const local = &self.locals[i - 1];
+            print("local: {s}\n", .{local.name});
 
-            if (Compiler.identifier_equal(local.name.lexeme, token.lexeme)) {
+            if (Compiler.identifier_equal(local.name, token.lexeme)) {
                 if (local.depth == -1) {
                     self.parser.err("can't read local variable in its own initializer");
                 }
@@ -391,6 +399,8 @@ pub const Compiler = struct {
             self.begin_scope();
             try self.block();
             try self.end_scope();
+        } else if (self.parser.match(.If)) {
+            try self.if_statement();
         } else {
             try self.expression_statement();
         }
@@ -402,7 +412,6 @@ pub const Compiler = struct {
     }
 
     fn block(self: *Self) Allocator.Error!void {
-        // Empty block
         self.parser.skip_new_lines();
 
         while (!self.parser.check(.RightBrace) and !self.parser.check(.Eof)) {
@@ -411,6 +420,25 @@ pub const Compiler = struct {
         }
 
         self.parser.consume(.RightBrace, "expect '}' after block");
+    }
+
+    fn if_statement(self: *Self) Allocator.Error!void {
+        try self.expression();
+        self.parser.skip_new_lines();
+
+        const then_jump = try self.emit_jump(.JumpIfFalse);
+        // Pop the condition inside then branch if the condition is true
+        try self.emit_byte(.Pop);
+        try self.statement();
+
+        const else_jump = try self.emit_jump(.Jump);
+        self.patch_jump(then_jump);
+
+        // Pop the condition inside else branch if the condition is false
+        try self.emit_byte(.Pop);
+
+        if (self.parser.match(.Else)) try self.statement();
+        self.patch_jump(else_jump);
     }
 
     // In the book, expr_stmt is: expr + ;
@@ -505,6 +533,8 @@ pub const Compiler = struct {
         var set_op: OpCode = undefined;
         var get_op: OpCode = undefined;
 
+        print("local id for var '{s}': {}\n\n", .{ name.lexeme, var_id });
+
         if (var_id != -1) {
             set_op = .SetLocal;
             get_op = .GetLocal;
@@ -538,6 +568,26 @@ pub const Compiler = struct {
     fn emit_bytes_u8(self: *Self, op1: OpCode, byte: u8) Allocator.Error!void {
         try self.emit_byte(op1);
         try self.emit_byte_u8(byte);
+    }
+
+    fn emit_jump(self: *Self, op: OpCode) Allocator.Error!usize {
+        try self.emit_byte(op);
+        try self.emit_byte_u8(0xff);
+        try self.emit_byte_u8(0xff);
+
+        return self.chunk.code.items.len - 2;
+    }
+
+    fn patch_jump(self: *Self, offset: usize) void {
+        // -2 is the jump offset itself
+        const jump: u16 = @intCast(self.chunk.code.items.len - offset - 2);
+
+        if (jump > std.math.maxInt(u16)) {
+            self.parser.err("too much code to jump over");
+        }
+
+        self.chunk.code.items[offset] = @as(u8, @intCast(jump >> 8)) & 0xff;
+        self.chunk.code.items[offset + 1] = @intCast(jump & 0xff);
     }
 
     fn end_compiler(self: *Self) Allocator.Error!void {

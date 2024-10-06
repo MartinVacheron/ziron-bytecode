@@ -43,6 +43,8 @@ pub const Disassembler = struct {
             .GetGlobal => self.constant_instruction("OP_GET_GLOBAL", offset),
             .GetLocal => self.byte_instruction("OP_GET_LOCAL", offset),
             .Greater => simple_instruction("OP_GREATER", offset),
+            .Jump => self.jump_instruction("OP_JUMP", 1, offset),
+            .JumpIfFalse => self.jump_instruction("OP_JUMP_IF_FALSE", 1, offset),
             .Less => simple_instruction("OP_LESS", offset),
             .Multiply => simple_instruction("OP_MULTIPLY", offset),
             .Negate => simple_instruction("OP_NEGATE", offset),
@@ -51,8 +53,8 @@ pub const Disassembler = struct {
             .Pop => simple_instruction("OP_POP", offset),
             .Print => simple_instruction("OP_PRINT", offset),
             .Return => simple_instruction("OP_RETURN", offset),
-            .SetGlobal => self.byte_instruction("OP_SET_GLOBAL", offset),
-            .SetLocal => self.constant_instruction("OP_SET_LOCAL", offset),
+            .SetGlobal => self.constant_instruction("OP_SET_GLOBAL", offset),
+            .SetLocal => self.byte_instruction("OP_SET_LOCAL", offset),
             .Subtract => simple_instruction("OP_SUBTRACT", offset),
             .True => simple_instruction("OP_TRUE", offset),
         };
@@ -79,5 +81,15 @@ pub const Disassembler = struct {
         print("{s:<16} {:<4} \n", .{ name, index });
 
         return offset + 2;
+    }
+
+    fn jump_instruction(self: *const Self, name: []const u8, sign: isize, offset: usize) usize {
+        var jump: u16 = @as(u16, self.chunk.code.items[offset + 1]) << 8;
+        jump |= self.chunk.code.items[offset + 2];
+        const target = @as(isize, jump) * sign + @as(isize, @intCast(offset)) + 3;
+
+        print("{s:<16} {:<4} -> {}", .{ name, offset, target });
+
+        return offset + 3;
     }
 };

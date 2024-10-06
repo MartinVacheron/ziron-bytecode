@@ -182,8 +182,8 @@ pub const Lexer = struct {
             'i' => blk: {
                 if (self.current > 1) {
                     break :blk switch (self.start[1]) {
-                        'f' => .If,
-                        'n' => .In,
+                        'f' => self.check_keyword(2, 0, "", .If),
+                        'n' => self.check_keyword(2, 0, "", .In),
                         else => .Identifier,
                     };
                 } else {
