@@ -36,16 +36,19 @@ pub const Disassembler = struct {
         return switch (op) {
             .Add => simple_instruction("OP_ADD", offset),
             .Constant => self.constant_instruction("OP_CONSTANT", offset),
+            .CreateIter => simple_instruction("OP_CREATE_ITER", offset),
             .DefineGlobal => self.constant_instruction("OP_DEFINE_GLOBAL", offset),
             .Divide => simple_instruction("OP_DIVIDE", offset),
             .Equal => simple_instruction("OP_EQUAL", offset),
             .False => simple_instruction("OP_FALSE", offset),
+            .ForIter => self.for_instruction("OP_FOR_ITER", 1, offset),
             .GetGlobal => self.constant_instruction("OP_GET_GLOBAL", offset),
             .GetLocal => self.byte_instruction("OP_GET_LOCAL", offset),
             .Greater => simple_instruction("OP_GREATER", offset),
             .Jump => self.jump_instruction("OP_JUMP", 1, offset),
             .JumpIfFalse => self.jump_instruction("OP_JUMP_IF_FALSE", 1, offset),
             .Less => simple_instruction("OP_LESS", offset),
+            .Loop => self.jump_instruction("OP_LOOP", -1, offset),
             .Multiply => simple_instruction("OP_MULTIPLY", offset),
             .Negate => simple_instruction("OP_NEGATE", offset),
             .Not => simple_instruction("OP_NOT", offset),
@@ -88,8 +91,19 @@ pub const Disassembler = struct {
         jump |= self.chunk.code.items[offset + 2];
         const target = @as(isize, jump) * sign + @as(isize, @intCast(offset)) + 3;
 
-        print("{s:<16} {:<4} -> {}", .{ name, offset, target });
+        print("{s:<16} {:<4} -> {}\n", .{ name, offset, target });
 
         return offset + 3;
+    }
+
+    fn for_instruction(self: *const Self, name: []const u8, sign: isize, offset: usize) usize {
+        var jump: u16 = @as(u16, self.chunk.code.items[offset + 1]) << 8;
+        jump |= self.chunk.code.items[offset + 2];
+        const target = @as(isize, jump) * sign + @as(isize, @intCast(offset)) + 4;
+        const iter_index = self.chunk.code.items[offset + 3];
+
+        print("{s:<16} iter index: {}, {:<4} -> {}\n", .{ name, iter_index, offset, target });
+
+        return offset + 4;
     }
 };

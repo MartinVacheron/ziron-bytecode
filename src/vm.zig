@@ -7,6 +7,7 @@ const Value = @import("values.zig").Value;
 const Compiler = @import("compiler.zig").Compiler;
 const Obj = @import("obj.zig").Obj;
 const ObjString = @import("obj.zig").ObjString;
+const ObjIter = @import("obj.zig").ObjIter;
 const Table = @import("table.zig").Table;
 const config = @import("config");
 
@@ -96,6 +97,13 @@ pub const Vm = struct {
 
     fn free_object(self: *Self, object: *Obj) void {
         switch (object.kind) {
+            // NOTE: does iter really needs to be an Obj?
+            // check memory footprint on the tagged union if
+            // we put it with the others Value
+            .Iter => {
+                const iter = object.as(ObjIter);
+                self.allocator.destroy(iter);
+            },
             .String => {
                 const string = object.as(ObjString);
                 self.allocator.free(string.chars);
@@ -164,6 +172,16 @@ pub const Vm = struct {
                     const value = self.read_constant();
                     self.stack.push(value);
                 },
+                .CreateIter => {
+                    const iter_end = self.stack.pop().Int;
+
+                    // Placeholder value (same as local idx)
+                    self.stack.push(Value.int(0));
+
+                    // Compiler checked if it was an int
+                    const iter = try ObjIter.create(self, iter_end);
+                    self.stack.push(Value.obj(iter.as_obj()));
+                },
                 .DefineGlobal => {
                     const name = self.read_string();
                     // NOTE: we don't check if field exists already, we can redefine same global
@@ -176,6 +194,18 @@ pub const Vm = struct {
                     self.stack.push(Value.bool_(v1.equals(v2)));
                 },
                 .False => self.stack.push(Value.bool_(false)),
+                .ForIter => {
+                    const jump = self.read_short();
+                    const iter_index = self.read_byte();
+
+                    const iter = self.stack.values[iter_index].as_obj().?.as(ObjIter);
+
+                    if (iter.next()) |i| {
+                        self.stack.values[iter_index - 1].Int = i;
+                    } else {
+                        self.ip += jump;
+                    }
+                },
                 // PERF: lookup differently the globals, like locals. Much more faster
                 // https://craftinginterpreters.com/global-variables.html#challenges [2]
                 .GetGlobal => {
@@ -191,12 +221,12 @@ pub const Vm = struct {
                 },
                 .GetLocal => {
                     const index = self.read_byte();
-                    self.stack.push(self.stack.peek(index));
+                    self.stack.push(self.stack.values[index]);
                 },
                 .Greater => self.stack.push(try self.binop('>')),
                 .Jump => {
-                    const jump = self.read_short();
-                    self.ip += jump;
+                    const offset = self.read_short();
+                    self.ip += offset;
                 },
                 .JumpIfFalse => {
                     const jump = self.read_short();
@@ -208,6 +238,11 @@ pub const Vm = struct {
                     if (!condition) self.ip += jump;
                 },
                 .Less => self.stack.push(try self.binop('<')),
+                .Loop => {
+                    // Must be in two part as read_short modifies ip
+                    const offset = self.read_short();
+                    self.ip -= offset;
+                },
                 .Multiply => self.stack.push(try self.binop('*')),
                 .Negate => {
                     // PERF: https://craftinginterpreters.com/a-virtual-machine.html#challenges [4]
@@ -264,8 +299,14 @@ pub const Vm = struct {
             return try self.concatenate(v1, v2);
         }
 
-        if (v1 == .Int and v2 != .Int or v1 == .Float and v2 != .Float) {
+        if ((v1 != .Int and v1 != .Float) or (v2 != .Int and v2 != .Float)) {
             self.runtime_err("binary operation only allowed between ints or floats");
+            return Value.null_();
+        }
+
+        if ((v1 == .Int and v2 != .Int) or (v1 == .Float and v2 != .Float)) {
+            self.runtime_err("binary operation must be on two ints or two floats");
+            return Value.null_();
         }
 
         if (v1 == .Int and v2 == .Int) {

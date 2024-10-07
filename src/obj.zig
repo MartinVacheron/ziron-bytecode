@@ -9,10 +9,13 @@ pub const Obj = struct {
     next: ?*Obj,
 
     const ObjKind = enum {
+        Iter,
         String,
     };
 
     pub fn allocate(vm: *Vm, comptime T: type, kind: ObjKind) Allocator.Error!*T {
+        comptime assert(@hasField(T, "obj"));
+
         const ptr = try vm.allocator.create(T);
         ptr.obj = Obj{
             .kind = kind,
@@ -33,6 +36,10 @@ pub const Obj = struct {
 
     pub fn print(self: *Obj, writer: anytype) void {
         switch (self.kind) {
+            .Iter => {
+                const iter = self.as(ObjIter);
+                writer.print("iter: {} -> {}", .{ iter.current, iter.end });
+            },
             .String => {
                 const str = self.as(ObjString);
                 writer.print("{s}", .{str.chars});
@@ -95,5 +102,35 @@ pub const ObjString = struct {
         }
 
         return hash;
+    }
+};
+
+pub const ObjIter = struct {
+    obj: Obj,
+    end: i64,
+    current: i64,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, end: i64) Allocator.Error!*ObjIter {
+        const iter = try Obj.allocate(vm, Self, .Iter);
+
+        iter.end = end;
+        iter.current = 0;
+
+        return iter;
+    }
+
+    pub fn next(self: *Self) ?i64 {
+        if (self.current < self.end) {
+            self.current += 1;
+            return self.current - 1;
+        }
+
+        return null;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
     }
 };

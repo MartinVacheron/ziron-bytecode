@@ -150,7 +150,7 @@ pub const Compiler = struct {
     };
 
     const parser_rule_table = std.EnumArray(TokenKind, ParseRule).init(.{
-        .And = ParseRule{},
+        .And = ParseRule{ .infix = Self.and_, .precedence = .And },
         .Bang = ParseRule{ .prefix = Self.unary },
         .BangEqual = ParseRule{ .infix = Self.binary, .precedence = .Equality },
         .Colon = ParseRule{},
@@ -178,7 +178,7 @@ pub const Compiler = struct {
         .Minus = ParseRule{ .prefix = Self.unary, .infix = Self.binary, .precedence = .Term },
         .NewLine = ParseRule{},
         .Null = ParseRule{ .prefix = Self.literal },
-        .Or = ParseRule{},
+        .Or = ParseRule{ .infix = Self.or_, .precedence = .Or },
         .Plus = ParseRule{ .infix = Self.binary, .precedence = .Term },
         .Print = ParseRule{},
         .Return = ParseRule{},
@@ -292,8 +292,8 @@ pub const Compiler = struct {
         const token = &self.parser.previous;
 
         var i: u8 = self.local_count;
-        while (i >= 0) : (i -= 1) {
-            const local = self.locals[i];
+        while (i > 0) : (i -= 1) {
+            const local = self.locals[i - 1];
 
             if (local.depth != -1 and local.depth < self.scope_depth) break;
 
@@ -331,14 +331,11 @@ pub const Compiler = struct {
 
     // i16 because we can return a -1 and otherwise it's all values for u8
     fn resolve_local(self: *Self, token: *const Token) i16 {
-        print("Start resolving local...\n", .{});
         var i: u8 = self.local_count;
-        print("local count: {}\n", .{i});
 
         // NOTE: in book, >= 0, but if it is 0, there is no local
         while (i > 0) : (i -= 1) {
             const local = &self.locals[i - 1];
-            print("local: {s}\n", .{local.name});
 
             if (Compiler.identifier_equal(local.name, token.lexeme)) {
                 if (local.depth == -1) {
@@ -401,6 +398,10 @@ pub const Compiler = struct {
             try self.end_scope();
         } else if (self.parser.match(.If)) {
             try self.if_statement();
+        } else if (self.parser.match(.For)) {
+            try self.for_statement();
+        } else if (self.parser.match(.While)) {
+            try self.while_statement();
         } else {
             try self.expression_statement();
         }
@@ -426,6 +427,11 @@ pub const Compiler = struct {
         try self.expression();
         self.parser.skip_new_lines();
 
+        if (!self.parser.check(.LeftBrace)) {
+            self.parser.error_at_current("expect '{' after 'if' condition");
+            return;
+        }
+
         const then_jump = try self.emit_jump(.JumpIfFalse);
         // Pop the condition inside then branch if the condition is true
         try self.emit_byte(.Pop);
@@ -439,6 +445,87 @@ pub const Compiler = struct {
 
         if (self.parser.match(.Else)) try self.statement();
         self.patch_jump(else_jump);
+    }
+
+    fn while_statement(self: *Self) Allocator.Error!void {
+        const loop_start = self.chunk.code.items.len;
+        try self.expression();
+
+        if (!self.parser.check(.LeftBrace)) {
+            self.parser.error_at_current("expect '{' after 'while' condition");
+            return;
+        }
+
+        const exit_jump = try self.emit_jump(.JumpIfFalse);
+        try self.emit_byte(.Pop);
+        try self.statement();
+        try self.emit_loop(loop_start);
+
+        self.patch_jump(exit_jump);
+        try self.emit_byte(.Pop);
+    }
+
+    fn for_statement(self: *Self) Allocator.Error!void {
+        self.begin_scope();
+        self.parser.consume(.Identifier, "expect variable name");
+
+        self.declare_variable();
+        // Id is not relevant, only used for global var
+        try self.define_variable(0);
+
+        self.parser.consume(.In, "expect 'in' after variable name");
+        self.parser.consume(.Int, "expect 'int' value to iterate on");
+        try self.int(false);
+
+        try self.emit_byte(.CreateIter);
+        // Placeholder var to keep locals and stack aligned
+        self.add_local("__iter");
+        // Important for the depth for clean scope exit
+        self.mark_initialized();
+        const iter_idx = self.local_count - 1;
+
+        const loop_start = self.chunk.code.items.len;
+        // Emits the 16bits jump operand
+        const exit_jump = try self.emit_jump(.ForIter);
+        // Index of the iterator in the stack
+        try self.emit_byte_u8(@intCast(iter_idx));
+
+        // TODO: we enter again a new scope here, making possible to
+        // redeclare the same var as the placeholder
+        try self.statement();
+        try self.emit_loop(loop_start);
+        // +1 because we jump 16bits for jump operand and the iterator index
+        self.patch_jump(exit_jump);
+
+        try self.end_scope();
+    }
+
+    fn and_(self: *Self, _: bool) Allocator.Error!void {
+        // At runtime, left hand side of 'and' is already executed
+        // and value is on top. It means that if it's false, we
+        // skip the entire right hand side.
+        const end_jump = try self.emit_jump(.JumpIfFalse);
+        // Otherwise, we discard the right hand side 'true' and
+        // evaluate the rhs which become the result of the 'and'
+        try self.emit_byte(.Pop);
+        try self.parse_precedence(.And);
+        self.patch_jump(end_jump);
+    }
+
+    // PERF: create a specific instruction to jump if true
+    // there is no reason for 'or' to be slower than 'and'
+    fn or_(self: *Self, _: bool) Allocator.Error!void {
+        // Jump just the unconditional jump if false to
+        // evaluate the second part of 'or' in case the
+        // first one is false
+        const else_jump = try self.emit_jump(.JumpIfFalse);
+        // If the first is true, we haven't jump and we can
+        // now jump to the next part
+        const end_jump = try self.emit_jump(.Jump);
+        self.patch_jump(else_jump);
+        try self.emit_byte(.Pop);
+        try self.parse_precedence(.Or);
+        self.patch_jump(end_jump);
     }
 
     // In the book, expr_stmt is: expr + ;
@@ -533,8 +620,6 @@ pub const Compiler = struct {
         var set_op: OpCode = undefined;
         var get_op: OpCode = undefined;
 
-        print("local id for var '{s}': {}\n\n", .{ name.lexeme, var_id });
-
         if (var_id != -1) {
             set_op = .SetLocal;
             get_op = .GetLocal;
@@ -582,6 +667,7 @@ pub const Compiler = struct {
         // -2 is the jump offset itself
         const jump: u16 = @intCast(self.chunk.code.items.len - offset - 2);
 
+        // FIXME: it's already casted in u16, check is useless. Check before cast?
         if (jump > std.math.maxInt(u16)) {
             self.parser.err("too much code to jump over");
         }
@@ -590,12 +676,25 @@ pub const Compiler = struct {
         self.chunk.code.items[offset + 1] = @intCast(jump & 0xff);
     }
 
+    fn emit_loop(self: *Self, start: usize) Allocator.Error!void {
+        try self.emit_byte(.Loop);
+        // +2 for loop operand 16bits
+        const offset = self.chunk.code.items.len - start + 2;
+
+        if (offset > std.math.maxInt(u16)) {
+            self.parser.err("loop body too large");
+        }
+
+        try self.emit_byte_u8(@as(u8, @intCast(offset >> 8)) & 0xff);
+        try self.emit_byte_u8(@intCast(offset & 0xff));
+    }
+
     fn end_compiler(self: *Self) Allocator.Error!void {
         if (config.PRINT_CODE) {
             if (!self.parser.had_error) {
                 const Disassembler = @import("disassembler.zig").Disassembler;
-                const dis = Disassembler.init(&self.chunk);
-                dis.dis_chunk("code");
+                const dis = Disassembler.init(self.chunk);
+                try dis.dis_chunk("code");
             }
         }
 
