@@ -36,7 +36,7 @@ fn run_file(filename: []const u8, allocator: std.mem.Allocator) !void {
     _ = try file.readAll(buf);
 
     var vm = Vm.new(allocator);
-    vm.init();
+    try vm.init();
     defer vm.deinit();
 
     try vm.interpret(buf);
@@ -50,7 +50,7 @@ fn repl(allocator: std.mem.Allocator) !void {
     defer input.deinit();
 
     var vm = Vm.new(allocator);
-    vm.init();
+    try vm.init();
     defer vm.deinit();
 
     _ = try stdout.write("\t\tZiron language REPL\n");

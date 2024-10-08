@@ -6,16 +6,62 @@ const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("values.zig").Value;
 const Compiler = @import("compiler.zig").Compiler;
 const Obj = @import("obj.zig").Obj;
-const ObjString = @import("obj.zig").ObjString;
+const ObjFunction = @import("obj.zig").ObjFunction;
 const ObjIter = @import("obj.zig").ObjIter;
+const ObjString = @import("obj.zig").ObjString;
 const Table = @import("table.zig").Table;
 const config = @import("config");
 
+const CallFrame = struct {
+    function: *ObjFunction,
+    ip: [*]u8,
+    slots: [*]Value,
+
+    const Self = @This();
+
+    pub fn read_byte(self: *Self) u8 {
+        const byte = self.ip[0];
+        self.ip += 1;
+        return byte;
+    }
+
+    pub fn read_constant(self: *Self) Value {
+        return self.function.chunk.constants.items[self.read_byte()];
+    }
+
+    pub fn read_string(self: *Self) *ObjString {
+        return self.read_constant().as_obj().?.as(ObjString);
+    }
+
+    pub fn read_short(self: *Self) u16 {
+        const part1 = self.read_byte();
+        const part2 = self.read_byte();
+
+        return (@as(u16, part1) << 8) | part2;
+    }
+};
+
+const FrameStack = struct {
+    frames: [FRAMES_MAX]CallFrame,
+    count: usize,
+
+    const Self = @This();
+    const FRAMES_MAX: u8 = 64;
+
+    pub fn new() Self {
+        return .{
+            .frames = undefined, // NOTE: if working, investigate perf (compare to value stack)
+            .count = 0,
+        };
+    }
+};
+
+// PERF: check BoundedArray?
 const Stack = struct {
     values: [STACK_SIZE]Value,
     top: [*]Value,
 
-    const STACK_SIZE: u8 = std.math.maxInt(u8);
+    const STACK_SIZE: u16 = @as(u16, FrameStack.FRAMES_MAX) * @as(u16, std.math.maxInt(u8));
     const Self = @This();
 
     pub fn new() Self {
@@ -46,14 +92,13 @@ const Stack = struct {
 };
 
 pub const Vm = struct {
-    chunk: Chunk,
-    ip: [*]u8,
     stack: Stack,
     compiler: Compiler,
     allocator: Allocator,
     objects: ?*Obj,
     strings: Table,
     globals: Table,
+    frame_stack: FrameStack,
 
     const Self = @This();
 
@@ -63,24 +108,23 @@ pub const Vm = struct {
 
     pub fn new(allocator: Allocator) Self {
         return .{
-            .chunk = Chunk.init(allocator),
-            .ip = undefined,
             .stack = Stack.new(),
             .compiler = Compiler.new(),
             .allocator = allocator,
             .objects = null,
             .strings = Table.init(allocator),
             .globals = Table.init(allocator),
+            .frame_stack = FrameStack.new(),
         };
     }
 
-    pub fn init(self: *Self) void {
+    pub fn init(self: *Self) Allocator.Error!void {
         self.stack.init();
-        self.compiler.init(self);
+        try self.compiler.init(self, .Script);
     }
 
     pub fn deinit(self: *Self) void {
-        self.chunk.deinit();
+        self.frame_stack.frames[self.frame_stack.count - 1].function.chunk.deinit();
         self.free_objects();
         self.strings.deinit();
         self.globals.deinit();
@@ -97,6 +141,11 @@ pub const Vm = struct {
 
     fn free_object(self: *Self, object: *Obj) void {
         switch (object.kind) {
+            .Fn => {
+                const function = object.as(ObjFunction);
+                function.chunk.deinit();
+                self.allocator.destroy(function);
+            },
             // NOTE: does iter really needs to be an Obj?
             // check memory footprint on the tagged union if
             // we put it with the others Value
@@ -112,31 +161,19 @@ pub const Vm = struct {
         }
     }
 
-    fn read_byte(self: *Self) u8 {
-        const byte = self.ip[0];
-        self.ip += 1;
-        return byte;
-    }
-
-    fn read_constant(self: *Self) Value {
-        return self.chunk.constants.items[self.read_byte()];
-    }
-
-    fn read_string(self: *Self) *ObjString {
-        return self.read_constant().as_obj().?.as(ObjString);
-    }
-
-    fn read_short(self: *Self) u16 {
-        const part1 = self.read_byte();
-        const part2 = self.read_byte();
-
-        return (@as(u16, part1) << 8) | part2;
-    }
-
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
-        self.chunk.code.clearRetainingCapacity();
-        try self.compiler.compile(source, &self.chunk);
-        self.ip = self.chunk.code.items.ptr;
+        const function = self.compiler.compile(source) catch |e| {
+            print("{}\n", .{e});
+            return;
+        };
+        self.stack.push(Value.obj(function.as_obj()));
+
+        // Here <=> [0]
+        const frame = &self.frame_stack.frames[self.frame_stack.count];
+        frame.function = function;
+        frame.ip = frame.function.chunk.code.items.ptr;
+        frame.slots = self.stack.top;
+        self.frame_stack.count += 1;
 
         try self.run();
     }
@@ -155,24 +192,28 @@ pub const Vm = struct {
                 print("\n", .{});
             }
 
+            // PERF: investigate to use a pointer to top frame (as value stack)
+            const frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+
             // as it is known as comptime (const via build.zig), not compiled
             // if not needed (equivalent of #ifdef or #[cfg(feature...)])
             if (config.TRACING) {
                 const Dis = @import("disassembler.zig").Disassembler;
-                const dis = Dis.init(&self.chunk);
+                const dis = Dis.init(&frame.function.chunk);
                 _ = dis.dis_instruction(self.instruction_nb());
             }
 
-            const instruction = self.read_byte();
+            const instruction = frame.read_byte();
             const op_code: OpCode = @enumFromInt(instruction);
 
             switch (op_code) {
                 .Add => self.stack.push(try self.binop('+')),
                 .Constant => {
-                    const value = self.read_constant();
+                    const value = frame.read_constant();
                     self.stack.push(value);
                 },
                 .CreateIter => {
+                    // No runtime check of type
                     const iter_end = self.stack.pop().Int;
 
                     // Placeholder value (same as local idx)
@@ -183,7 +224,7 @@ pub const Vm = struct {
                     self.stack.push(Value.obj(iter.as_obj()));
                 },
                 .DefineGlobal => {
-                    const name = self.read_string();
+                    const name = frame.read_string();
                     // NOTE: we don't check if field exists already, we can redefine same global
                     _ = try self.globals.set(name, self.stack.pop());
                 },
@@ -195,21 +236,23 @@ pub const Vm = struct {
                 },
                 .False => self.stack.push(Value.bool_(false)),
                 .ForIter => {
-                    const jump = self.read_short();
-                    const iter_index = self.read_byte();
+                    const jump = frame.read_short();
+                    const iter_index = frame.read_byte();
 
-                    const iter = self.stack.values[iter_index].as_obj().?.as(ObjIter);
+                    // const iter = self.stack.values[iter_index].as_obj().?.as(ObjIter);
+                    const iter = frame.slots[iter_index].as_obj().?.as(ObjIter);
 
                     if (iter.next()) |i| {
-                        self.stack.values[iter_index - 1].Int = i;
+                        // self.stack.values[iter_index - 1].Int = i;
+                        frame.slots[iter_index - 1].Int = i;
                     } else {
-                        self.ip += jump;
+                        frame.ip += jump;
                     }
                 },
                 // PERF: lookup differently the globals, like locals. Much more faster
                 // https://craftinginterpreters.com/global-variables.html#challenges [2]
                 .GetGlobal => {
-                    const name = self.read_string();
+                    const name = frame.read_string();
                     const value = self.globals.get(name) orelse {
                         var buf: [250]u8 = undefined;
                         _ = try std.fmt.bufPrint(&buf, "undeclared variable: {s}\n", .{name.chars});
@@ -220,28 +263,28 @@ pub const Vm = struct {
                     self.stack.push(value);
                 },
                 .GetLocal => {
-                    const index = self.read_byte();
-                    self.stack.push(self.stack.values[index]);
+                    const index = frame.read_byte();
+                    self.stack.push(frame.slots[index]);
                 },
                 .Greater => self.stack.push(try self.binop('>')),
                 .Jump => {
-                    const offset = self.read_short();
-                    self.ip += offset;
+                    const offset = frame.read_short();
+                    frame.ip += offset;
                 },
                 .JumpIfFalse => {
-                    const jump = self.read_short();
+                    const jump = frame.read_short();
                     const condition = self.stack.peek(0).as_bool() orelse {
                         self.runtime_err("condition must be a bool");
                         return error.RuntimeErr;
                     };
 
-                    if (!condition) self.ip += jump;
+                    if (!condition) frame.ip += jump;
                 },
                 .Less => self.stack.push(try self.binop('<')),
                 .Loop => {
                     // Must be in two part as read_short modifies ip
-                    const offset = self.read_short();
-                    self.ip -= offset;
+                    const offset = frame.read_short();
+                    frame.ip -= offset;
                 },
                 .Multiply => self.stack.push(try self.binop('*')),
                 .Negate => {
@@ -269,7 +312,7 @@ pub const Vm = struct {
                 .Pop => _ = self.stack.pop(),
                 .Return => return,
                 .SetGlobal => {
-                    const name = self.read_string();
+                    const name = frame.read_string();
 
                     // Peek here because assignemnt is an expression, we leave it on the stack
                     if (try self.globals.set(name, self.stack.peek(0))) {
@@ -282,8 +325,8 @@ pub const Vm = struct {
                     }
                 },
                 .SetLocal => {
-                    const index = self.read_byte();
-                    self.stack.values[index] = self.stack.peek(0);
+                    const index = frame.read_byte();
+                    frame.slots[index] = self.stack.peek(0);
                 },
                 .Subtract => self.stack.push(try self.binop('-')),
                 .True => self.stack.push(Value.bool_(true)),
@@ -348,14 +391,17 @@ pub const Vm = struct {
     }
 
     fn runtime_err(self: *const Self, msg: []const u8) void {
-        const line = self.chunk.lines.items[self.instruction_nb()];
+        const frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+        const line = frame.function.chunk.lines.items[self.instruction_nb()];
         print("[line {}] in script: {s}\n", .{ line, msg });
         // TODO: in repl mode, the stack is corrupted if we don't stop execution
     }
 
+    // Only used in debug or runtime error, no performance required
     fn instruction_nb(self: *const Self) usize {
-        const addr1 = @intFromPtr(self.ip);
-        const addr2 = @intFromPtr(self.chunk.code.items.ptr);
+        const frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+        const addr1 = @intFromPtr(frame.ip);
+        const addr2 = @intFromPtr(frame.function.chunk.code.items.ptr);
         return addr1 - addr2;
     }
 };

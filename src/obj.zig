@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Vm = @import("vm.zig").Vm;
+const Chunk = @import("chunk.zig").Chunk;
 const Value = @import("values.zig").Value;
 
 pub const Obj = struct {
@@ -9,12 +10,14 @@ pub const Obj = struct {
     next: ?*Obj,
 
     const ObjKind = enum {
+        Fn,
         Iter,
         String,
     };
 
     pub fn allocate(vm: *Vm, comptime T: type, kind: ObjKind) Allocator.Error!*T {
         comptime assert(@hasField(T, "obj"));
+        comptime assert(@hasDecl(T, "as_obj"));
 
         const ptr = try vm.allocator.create(T);
         ptr.obj = Obj{
@@ -36,6 +39,14 @@ pub const Obj = struct {
 
     pub fn print(self: *Obj, writer: anytype) void {
         switch (self.kind) {
+            .Fn => {
+                const function_name = self.as(ObjFunction).name orelse {
+                    writer.print("<script>", .{});
+                    return;
+                };
+
+                writer.print("<fn {s}>", .{function_name.chars});
+            },
             .Iter => {
                 const iter = self.as(ObjIter);
                 writer.print("iter: {} -> {}", .{ iter.current, iter.end });
@@ -128,6 +139,29 @@ pub const ObjIter = struct {
         }
 
         return null;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
+    }
+};
+
+pub const ObjFunction = struct {
+    obj: Obj,
+    arity: usize,
+    chunk: Chunk,
+    name: ?*ObjString,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, ObjFunction, .Fn);
+
+        obj.arity = 0;
+        obj.name = null;
+        obj.chunk = Chunk.init(vm.allocator);
+
+        return obj;
     }
 
     pub fn as_obj(self: *Self) *Obj {

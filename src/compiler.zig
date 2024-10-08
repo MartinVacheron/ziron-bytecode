@@ -9,6 +9,7 @@ const Token = @import("lexer.zig").Token;
 const TokenKind = @import("lexer.zig").TokenKind;
 const Value = @import("values.zig").Value;
 const ObjString = @import("obj.zig").ObjString;
+const ObjFunction = @import("obj.zig").ObjFunction;
 const Vm = @import("vm.zig").Vm;
 
 const Precedence = enum {
@@ -124,15 +125,22 @@ const Parser = struct {
     }
 };
 
+const FnKind = enum {
+    Fn,
+    Script,
+};
+
 const Local = struct {
     name: []const u8,
     depth: isize,
 };
 
 pub const Compiler = struct {
-    parser: Parser,
-    chunk: *Chunk,
     vm: *Vm,
+    parser: Parser,
+    // chunk: *Chunk,
+    function: *ObjFunction,
+    kind: FnKind,
     locals: [std.math.maxInt(u8) + 1]Local,
     local_count: u8,
     scope_depth: usize,
@@ -196,22 +204,30 @@ pub const Compiler = struct {
 
     pub fn new() Self {
         return .{
-            .parser = Parser.init(),
-            .chunk = undefined,
             .vm = undefined,
+            .parser = Parser.init(),
+            .function = undefined,
+            .kind = .Script,
             .locals = [_]Local{.{ .name = undefined, .depth = 0 }} ** 256,
             .local_count = 0,
             .scope_depth = 0,
         };
     }
 
-    pub fn init(self: *Self, vm: *Vm) void {
+    pub fn init(self: *Self, vm: *Vm, kind: FnKind) Allocator.Error!void {
         self.vm = vm;
+        self.kind = kind;
+        self.function = try ObjFunction.create(vm);
+
+        // Because the first value in the stack will be the function object
+        // itself. We keep the first slot empty to be aligned to runtime stack
+        const first_local = &self.locals[0];
+        first_local.depth = 0;
+        first_local.name = "";
     }
 
     // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
-    pub fn compile(self: *Self, source: []const u8, chunk: *Chunk) CompileErr!void {
-        self.chunk = chunk;
+    pub fn compile(self: *Self, source: []const u8) CompileErr!*ObjFunction {
         self.parser.lexer.init(source);
         self.parser.advance();
 
@@ -223,9 +239,9 @@ pub const Compiler = struct {
             if (self.parser.panic_mode) self.parser.synchronize();
         }
 
-        try self.end_compiler();
+        const function = try self.end_compiler();
 
-        if (self.parser.had_error) return error.CompileErr;
+        if (self.parser.had_error) return error.CompileErr else return function;
     }
 
     fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {
@@ -448,7 +464,7 @@ pub const Compiler = struct {
     }
 
     fn while_statement(self: *Self) Allocator.Error!void {
-        const loop_start = self.chunk.code.items.len;
+        const loop_start = self.get_chunk().code.items.len;
         try self.expression();
 
         if (!self.parser.check(.LeftBrace)) {
@@ -484,7 +500,7 @@ pub const Compiler = struct {
         self.mark_initialized();
         const iter_idx = self.local_count - 1;
 
-        const loop_start = self.chunk.code.items.len;
+        const loop_start = self.get_chunk().code.items.len;
         // Emits the 16bits jump operand
         const exit_jump = try self.emit_jump(.ForIter);
         // Index of the iterator in the stack
@@ -638,11 +654,11 @@ pub const Compiler = struct {
     }
 
     fn emit_byte(self: *Self, op: OpCode) Allocator.Error!void {
-        try self.chunk.write_op(op, @truncate(self.parser.previous.line));
+        try self.get_chunk().write_op(op, @truncate(self.parser.previous.line));
     }
 
     fn emit_byte_u8(self: *Self, byte: u8) Allocator.Error!void {
-        try self.chunk.write_byte(byte, @truncate(self.parser.previous.line));
+        try self.get_chunk().write_byte(byte, @truncate(self.parser.previous.line));
     }
 
     fn emit_bytes(self: *Self, op1: OpCode, op2: OpCode) Allocator.Error!void {
@@ -660,26 +676,27 @@ pub const Compiler = struct {
         try self.emit_byte_u8(0xff);
         try self.emit_byte_u8(0xff);
 
-        return self.chunk.code.items.len - 2;
+        return self.get_chunk().code.items.len - 2;
     }
 
     fn patch_jump(self: *Self, offset: usize) void {
         // -2 is the jump offset itself
-        const jump: u16 = @intCast(self.chunk.code.items.len - offset - 2);
+        const chunk = self.get_chunk();
+        const jump: u16 = @intCast(chunk.code.items.len - offset - 2);
 
         // FIXME: it's already casted in u16, check is useless. Check before cast?
         if (jump > std.math.maxInt(u16)) {
             self.parser.err("too much code to jump over");
         }
 
-        self.chunk.code.items[offset] = @as(u8, @intCast(jump >> 8)) & 0xff;
-        self.chunk.code.items[offset + 1] = @intCast(jump & 0xff);
+        chunk.code.items[offset] = @as(u8, @intCast(jump >> 8)) & 0xff;
+        chunk.code.items[offset + 1] = @intCast(jump & 0xff);
     }
 
     fn emit_loop(self: *Self, start: usize) Allocator.Error!void {
         try self.emit_byte(.Loop);
         // +2 for loop operand 16bits
-        const offset = self.chunk.code.items.len - start + 2;
+        const offset = self.get_chunk().code.items.len - start + 2;
 
         if (offset > std.math.maxInt(u16)) {
             self.parser.err("loop body too large");
@@ -689,16 +706,25 @@ pub const Compiler = struct {
         try self.emit_byte_u8(@intCast(offset & 0xff));
     }
 
-    fn end_compiler(self: *Self) Allocator.Error!void {
+    fn get_chunk(self: *const Self) *Chunk {
+        return &self.function.chunk;
+    }
+
+    fn end_compiler(self: *Self) Allocator.Error!*ObjFunction {
         if (config.PRINT_CODE) {
             if (!self.parser.had_error) {
                 const Disassembler = @import("disassembler.zig").Disassembler;
-                const dis = Disassembler.init(self.chunk);
-                try dis.dis_chunk("code");
+                const dis = Disassembler.init(self.get_chunk());
+
+                const obj = self.function.name;
+                const name = if (obj) |o| o.chars else "<script>";
+
+                try dis.dis_chunk(name);
             }
         }
 
         try self.emit_return();
+        return self.function;
     }
 
     fn emit_return(self: *Self) Allocator.Error!void {
@@ -711,7 +737,7 @@ pub const Compiler = struct {
 
     /// Writes a constant to the chunk. Returns its index
     fn make_constant(self: *Self, value: Value) Allocator.Error!u8 {
-        const constant = try self.chunk.write_constant(value);
+        const constant = try self.get_chunk().write_constant(value);
 
         // NOTE: for now, unnecessary check because it writes to an ArrayList
         if (constant > std.math.maxInt(u8)) {

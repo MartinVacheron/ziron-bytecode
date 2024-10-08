@@ -51,21 +51,13 @@ pub const Value = union(enum) {
         };
     }
 
+    // PERF: else => unreachable and return a non-null to avoid unwrapping
+    // it in the call site?
     pub fn as_obj(self: *const Value) ?*Obj {
         return switch (self.*) {
             .Obj => |v| v,
             else => null,
         };
-    }
-
-    pub fn obj_type(self: *const Value) ?ObjKind {
-        const object = self.as_obj() orelse return null;
-        return object.kind;
-    }
-
-    pub fn is_obj_type(self: *const Value, kind: ObjKind) bool {
-        const object_kind = self.obj_type() orelse false;
-        return object_kind == kind;
     }
 
     pub fn equals(self: Value, other: Value) bool {
