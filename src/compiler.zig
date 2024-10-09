@@ -12,6 +12,43 @@ const ObjString = @import("obj.zig").ObjString;
 const ObjFunction = @import("obj.zig").ObjFunction;
 const Vm = @import("vm.zig").Vm;
 
+pub const ByteCodeGen = struct {
+    parser: Parser,
+    compiler: Compiler,
+
+    const Self = @This();
+
+    pub fn new() Self {
+        return .{
+            .parser = Parser.init(),
+            .compiler = Compiler.new(),
+        };
+    }
+
+    // NOTE: Necessary to do in two steps for parser address?
+    pub fn init(vm: *Vm, self: *Self) void {
+        self.compiler.init(vm, &self.parser, .Script);
+    }
+
+    // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
+    pub fn compile(self: *Self, source: []const u8) Compiler.CompileErr!*ObjFunction {
+        self.parser.lexer.init(source);
+        self.parser.advance();
+
+        while (!self.parser.match(.Eof)) {
+            self.parser.skip_new_lines();
+            try self.declaration();
+            self.parser.skip_new_lines();
+
+            if (self.parser.panic_mode) self.parser.synchronize();
+        }
+
+        const func = try self.compiler.end_compiler();
+
+        return if (self.parser.had_error) error.CompileErr else func;
+    }
+};
+
 const Precedence = enum {
     None,
     Assignment, // =
@@ -137,8 +174,7 @@ const Local = struct {
 
 pub const Compiler = struct {
     vm: *Vm,
-    parser: Parser,
-    // chunk: *Chunk,
+    parser: *Parser,
     function: *ObjFunction,
     kind: FnKind,
     locals: [std.math.maxInt(u8) + 1]Local,
@@ -205,7 +241,7 @@ pub const Compiler = struct {
     pub fn new() Self {
         return .{
             .vm = undefined,
-            .parser = Parser.init(),
+            .parser = undefined,
             .function = undefined,
             .kind = .Script,
             .locals = [_]Local{.{ .name = undefined, .depth = 0 }} ** 256,
@@ -214,8 +250,9 @@ pub const Compiler = struct {
         };
     }
 
-    pub fn init(self: *Self, vm: *Vm, kind: FnKind) Allocator.Error!void {
+    pub fn init(self: *Self, vm: *Vm, parser: *Parser, kind: FnKind) Allocator.Error!void {
         self.vm = vm;
+        self.parser = parser;
         self.kind = kind;
         self.function = try ObjFunction.create(vm);
 
@@ -227,6 +264,8 @@ pub const Compiler = struct {
     }
 
     // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
+    //
+    // FIXME: move this function to ByteCodeGen so that we can loop
     pub fn compile(self: *Self, source: []const u8) CompileErr!*ObjFunction {
         self.parser.lexer.init(source);
         self.parser.advance();
@@ -239,9 +278,9 @@ pub const Compiler = struct {
             if (self.parser.panic_mode) self.parser.synchronize();
         }
 
-        const function = try self.end_compiler();
+        const func = try self.end_compiler();
 
-        if (self.parser.had_error) return error.CompileErr else return function;
+        return if (self.parser.had_error) error.CompileErr else func;
     }
 
     fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {
@@ -379,6 +418,10 @@ pub const Compiler = struct {
     }
 
     fn mark_initialized(self: *Self) void {
+        // Because fn definition calls this function and can be at top level
+        // we add one check
+        if (self.scope_depth == 0) return;
+
         self.locals[self.local_count - 1].depth = @intCast(self.scope_depth);
     }
 
@@ -387,6 +430,8 @@ pub const Compiler = struct {
 
         if (self.parser.match(.Var)) {
             try self.var_declaration();
+        } else if (self.parser.match(.Fn)) {
+            try self.fn_declaration();
         } else {
             try self.statement();
         }
@@ -403,6 +448,29 @@ pub const Compiler = struct {
 
         self.parser.consume(.NewLine, "expect new line after variable declaration");
         try self.define_variable(global_id);
+    }
+
+    fn fn_declaration(self: *Self) Allocator.Error!void {
+        const global_id = try self.parse_variable("expect function name");
+        // Mark initialized to be able to refer to itself in its body
+        self.mark_initialized();
+        try self.parse_function(.Fn);
+        // Will bind to the object fn on top of stack created by function()
+        try self.define_variable(global_id);
+    }
+
+    fn parse_function(self: *Self, kind: FnKind) Allocator.Error!void {
+        var compiler = Compiler.new();
+        try compiler.init(self.vm, self.parser, kind);
+        compiler.begin_scope();
+
+        compiler.parser.consume_skip(.LeftParen, "expect '(' after function name");
+        compiler.parser.consume_skip(.RightParen, "expect ')' after parameters");
+        compiler.parser.consume_skip(.LeftBrace, "expect '{' before function body");
+
+        try compiler.block();
+        const obj_fn = try compiler.end_compiler();
+        try self.emit_bytes_u8(.Constant, try self.make_constant(Value.obj(obj_fn.as_obj())));
     }
 
     fn statement(self: *Self) Allocator.Error!void {
