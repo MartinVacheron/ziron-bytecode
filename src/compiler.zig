@@ -13,6 +13,7 @@ const ObjFunction = @import("obj.zig").ObjFunction;
 const Vm = @import("vm.zig").Vm;
 
 pub const ByteCodeGen = struct {
+    vm: *Vm,
     parser: Parser,
     compiler: Compiler,
 
@@ -20,14 +21,15 @@ pub const ByteCodeGen = struct {
 
     pub fn new() Self {
         return .{
+            .vm = undefined,
             .parser = Parser.init(),
             .compiler = Compiler.new(),
         };
     }
 
-    // NOTE: Necessary to do in two steps for parser address?
-    pub fn init(vm: *Vm, self: *Self) void {
-        self.compiler.init(vm, &self.parser, .Script);
+    pub fn init(self: *Self, vm: *Vm) Allocator.Error!void {
+        self.vm = vm;
+        try self.compiler.init(self.vm, &self.parser, .Script);
     }
 
     // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
@@ -37,7 +39,7 @@ pub const ByteCodeGen = struct {
 
         while (!self.parser.match(.Eof)) {
             self.parser.skip_new_lines();
-            try self.declaration();
+            try self.compiler.declaration();
             self.parser.skip_new_lines();
 
             if (self.parser.panic_mode) self.parser.synchronize();
@@ -172,6 +174,7 @@ const Local = struct {
     depth: isize,
 };
 
+// NOTE: avoided the enclosing compiler for now
 pub const Compiler = struct {
     vm: *Vm,
     parser: *Parser,
@@ -216,7 +219,7 @@ pub const Compiler = struct {
         .In = ParseRule{},
         .Int = ParseRule{ .prefix = Self.int },
         .LeftBrace = ParseRule{},
-        .LeftParen = ParseRule{ .prefix = Self.grouping },
+        .LeftParen = ParseRule{ .prefix = Self.grouping, .infix = Self.call, .precedence = .Call },
         .Less = ParseRule{ .infix = Self.binary, .precedence = .Comparison },
         .LessEqual = ParseRule{ .infix = Self.binary, .precedence = .Comparison },
         .Minus = ParseRule{ .prefix = Self.unary, .infix = Self.binary, .precedence = .Term },
@@ -261,26 +264,7 @@ pub const Compiler = struct {
         const first_local = &self.locals[0];
         first_local.depth = 0;
         first_local.name = "";
-    }
-
-    // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
-    //
-    // FIXME: move this function to ByteCodeGen so that we can loop
-    pub fn compile(self: *Self, source: []const u8) CompileErr!*ObjFunction {
-        self.parser.lexer.init(source);
-        self.parser.advance();
-
-        while (!self.parser.match(.Eof)) {
-            self.parser.skip_new_lines();
-            try self.declaration();
-            self.parser.skip_new_lines();
-
-            if (self.parser.panic_mode) self.parser.synchronize();
-        }
-
-        const func = try self.end_compiler();
-
-        return if (self.parser.had_error) error.CompileErr else func;
+        self.local_count += 1;
     }
 
     fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {
@@ -330,8 +314,8 @@ pub const Compiler = struct {
         }
     }
 
-    /// Consume variable lexeme and add it to the chunk's constants
-    /// Returns its index
+    /// Consume variable lexeme and add it either to locals and return 0
+    /// or to the chunk's constants and return its index
     fn parse_variable(self: *Self, msg: []const u8) Allocator.Error!u8 {
         self.parser.consume(.Identifier, msg);
 
@@ -341,6 +325,7 @@ pub const Compiler = struct {
         return self.identifier_constant(&self.parser.previous);
     }
 
+    /// Take the previous token and add it as a local if scope_depth > 0
     fn declare_variable(self: *Self) void {
         if (self.scope_depth == 0) return;
 
@@ -406,6 +391,9 @@ pub const Compiler = struct {
 
     // PERF: define multiple time the same one potentially
     // https://craftinginterpreters.com/global-variables.html#challenges [1]
+
+    /// If scope_depth > 0, just mark the local initialized, otherwise
+    /// emits DefineGlobal with its index
     fn define_variable(self: *Self, global_id: u8) Allocator.Error!void {
         // Local variable are automatically implicitly created when
         // we parse its initializer. It's right on top of the stack
@@ -417,12 +405,36 @@ pub const Compiler = struct {
         try self.emit_bytes_u8(.DefineGlobal, global_id);
     }
 
+    /// If scope_depth > 0, update the local's depth with current compiler's one
     fn mark_initialized(self: *Self) void {
         // Because fn definition calls this function and can be at top level
         // we add one check
         if (self.scope_depth == 0) return;
 
         self.locals[self.local_count - 1].depth = @intCast(self.scope_depth);
+    }
+
+    /// Each compiled argument is gonna be on top of the stack.
+    /// Returns the number of arguments parsed
+    fn argument_list(self: *Self) Allocator.Error!u8 {
+        var args_count: u8 = 0;
+
+        if (!self.parser.check(.RightParen)) {
+            while (true) {
+                try self.expression();
+
+                if (args_count == 255) {
+                    self.parser.error_at_current("can't have more than 255 arguments");
+                }
+
+                args_count += 1;
+
+                if (!self.parser.match(.Comma)) break;
+            }
+        }
+
+        self.parser.consume(.RightParen, "expect ')' after arguments");
+        return args_count;
     }
 
     fn declaration(self: *Self) Allocator.Error!void {
@@ -462,11 +474,32 @@ pub const Compiler = struct {
     fn parse_function(self: *Self, kind: FnKind) Allocator.Error!void {
         var compiler = Compiler.new();
         try compiler.init(self.vm, self.parser, kind);
+
+        if (kind != .Script) {
+            compiler.function.name = try ObjString.copy(self.vm, self.parser.previous.lexeme);
+        }
+
         compiler.begin_scope();
 
         compiler.parser.consume_skip(.LeftParen, "expect '(' after function name");
-        compiler.parser.consume_skip(.RightParen, "expect ')' after parameters");
-        compiler.parser.consume_skip(.LeftBrace, "expect '{' before function body");
+
+        if (!self.parser.check(.RightParen)) {
+            while (true) {
+                compiler.function.arity += 1;
+
+                if (compiler.function.arity > 255) {
+                    self.parser.error_at_current("can't have more than 255 parameters");
+                }
+
+                const constant_id = try compiler.parse_variable("expect parameter name");
+                try compiler.define_variable(constant_id);
+
+                if (!self.parser.match(.Comma)) break;
+            }
+        }
+
+        self.parser.consume_skip(.RightParen, "expect ')' after parameters");
+        self.parser.consume_skip(.LeftBrace, "expect '{' before function body");
 
         try compiler.block();
         const obj_fn = try compiler.end_compiler();
@@ -486,6 +519,8 @@ pub const Compiler = struct {
             try self.for_statement();
         } else if (self.parser.match(.While)) {
             try self.while_statement();
+        } else if (self.parser.match(.Return)) {
+            try self.return_statement();
         } else {
             try self.expression_statement();
         }
@@ -584,6 +619,20 @@ pub const Compiler = struct {
         try self.end_scope();
     }
 
+    fn return_statement(self: *Self) Allocator.Error!void {
+        if (self.kind == .Script) {
+            self.parser.err("can't return from top-level code");
+        }
+
+        if (self.parser.match(.NewLine)) {
+            try self.emit_return();
+        } else {
+            try self.expression();
+            self.parser.consume(.NewLine, "expect nothing after return value");
+            try self.emit_byte(.Return);
+        }
+    }
+
     fn and_(self: *Self, _: bool) Allocator.Error!void {
         // At runtime, left hand side of 'and' is already executed
         // and value is on top. It means that if it's false, we
@@ -650,6 +699,11 @@ pub const Compiler = struct {
             .Slash => self.emit_byte(.Divide),
             else => unreachable,
         };
+    }
+
+    fn call(self: *Self, _: bool) Allocator.Error!void {
+        const args_count = try self.argument_list();
+        try self.emit_bytes_u8(.Call, args_count);
     }
 
     fn unary(self: *Self, _: bool) Allocator.Error!void {
@@ -795,7 +849,11 @@ pub const Compiler = struct {
         return self.function;
     }
 
+    /// Called when there is only an implicit return at the end of a
+    /// function body. Pushes a null on top of the stack. For real
+    /// returns, there is a return_statement handler
     fn emit_return(self: *Self) Allocator.Error!void {
+        try self.emit_byte(.Null);
         try self.emit_byte(.Return);
     }
 

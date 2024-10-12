@@ -35,6 +35,7 @@ pub const Disassembler = struct {
         const op: OpCode = @enumFromInt(self.chunk.code.items[offset]);
         return switch (op) {
             .Add => simple_instruction("OP_ADD", offset),
+            .Call => self.byte_instruction("OP_CALL", offset),
             .Constant => self.constant_instruction("OP_CONSTANT", offset),
             .CreateIter => simple_instruction("OP_CREATE_ITER", offset),
             .DefineGlobal => self.constant_instruction("OP_DEFINE_GLOBAL", offset),

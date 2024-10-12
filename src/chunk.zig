@@ -5,6 +5,7 @@ const Value = @import("values.zig").Value;
 // PERF: better to have dedicated LessEqual, ... op codes
 pub const OpCode = enum(u8) {
     Add,
+    Call,
     Constant,
     CreateIter,
     DefineGlobal,

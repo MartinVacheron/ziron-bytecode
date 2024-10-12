@@ -12,6 +12,7 @@ pub const Obj = struct {
     const ObjKind = enum {
         Fn,
         Iter,
+        NativeFn,
         String,
     };
 
@@ -51,9 +52,12 @@ pub const Obj = struct {
                 const iter = self.as(ObjIter);
                 writer.print("iter: {} -> {}", .{ iter.current, iter.end });
             },
+            .NativeFn => {
+                writer.print("<native fn>", .{});
+            },
             .String => {
                 const str = self.as(ObjString);
-                writer.print("{s}", .{str.chars});
+                writer.print("\"{s}\"", .{str.chars});
             },
         }
     }
@@ -64,8 +68,10 @@ pub const ObjString = struct {
     chars: []const u8,
     hash: u32,
 
+    const Self = @This();
+
     // PERF: flexible array member: https://craftinginterpreters.com/strings.html#challenges
-    pub fn create(vm: *Vm, str: []const u8, hash: u32) Allocator.Error!*ObjString {
+    fn create(vm: *Vm, str: []const u8, hash: u32) Allocator.Error!*ObjString {
         var obj = try Obj.allocate(vm, ObjString, .String);
         obj.chars = str;
         obj.hash = hash;
@@ -113,6 +119,11 @@ pub const ObjString = struct {
         }
 
         return hash;
+    }
+
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.free(self.chars);
+        allocator.destroy(self);
     }
 };
 
@@ -166,5 +177,33 @@ pub const ObjFunction = struct {
 
     pub fn as_obj(self: *Self) *Obj {
         return &self.obj;
+    }
+
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        self.chunk.deinit();
+
+        if (self.name) |n| n.deinit(allocator);
+        allocator.destroy(self);
+    }
+};
+
+// Many item pointer for args?
+// fn(args_count, args) result
+const NativeFn = fn (u8, []const Value) Value;
+
+pub const ObjNativeFn = struct {
+    obj: Obj,
+    function: NativeFn,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, function: NativeFn) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, ObjNativeFn, .NativeFn);
+        obj.function = function;
+        return obj;
+    }
+
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.destroy(self);
     }
 };

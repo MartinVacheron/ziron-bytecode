@@ -4,6 +4,7 @@ const print = std.debug.print;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("values.zig").Value;
+const ByteCodeGen = @import("compiler.zig").ByteCodeGen;
 const Compiler = @import("compiler.zig").Compiler;
 const Obj = @import("obj.zig").Obj;
 const ObjFunction = @import("obj.zig").ObjFunction;
@@ -93,7 +94,7 @@ const Stack = struct {
 
 pub const Vm = struct {
     stack: Stack,
-    compiler: Compiler,
+    bytecode_gen: ByteCodeGen,
     allocator: Allocator,
     objects: ?*Obj,
     strings: Table,
@@ -109,7 +110,7 @@ pub const Vm = struct {
     pub fn new(allocator: Allocator) Self {
         return .{
             .stack = Stack.new(),
-            .compiler = Compiler.new(),
+            .bytecode_gen = ByteCodeGen.new(),
             .allocator = allocator,
             .objects = null,
             .strings = Table.init(allocator),
@@ -120,7 +121,7 @@ pub const Vm = struct {
 
     pub fn init(self: *Self) Allocator.Error!void {
         self.stack.init();
-        try self.compiler.init(self, .Script);
+        try self.bytecode_gen.init(self);
     }
 
     pub fn deinit(self: *Self) void {
@@ -143,8 +144,7 @@ pub const Vm = struct {
         switch (object.kind) {
             .Fn => {
                 const function = object.as(ObjFunction);
-                function.chunk.deinit();
-                self.allocator.destroy(function);
+                function.deinit(self.allocator);
             },
             // NOTE: does iter really needs to be an Obj?
             // check memory footprint on the tagged union if
@@ -155,26 +155,19 @@ pub const Vm = struct {
             },
             .String => {
                 const string = object.as(ObjString);
-                self.allocator.free(string.chars);
-                self.allocator.destroy(string);
+                string.deinit(self.allocator);
             },
         }
     }
 
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
-        const function = self.compiler.compile(source) catch |e| {
+        const function = self.bytecode_gen.compile(source) catch |e| {
             print("{}\n", .{e});
             return;
         };
         self.stack.push(Value.obj(function.as_obj()));
 
-        // Here <=> [0]
-        const frame = &self.frame_stack.frames[self.frame_stack.count];
-        frame.function = function;
-        frame.ip = frame.function.chunk.code.items.ptr;
-        frame.slots = self.stack.top;
-        self.frame_stack.count += 1;
-
+        try self.call(function, 0);
         try self.run();
     }
 
@@ -193,7 +186,7 @@ pub const Vm = struct {
             }
 
             // PERF: investigate to use a pointer to top frame (as value stack)
-            const frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+            var frame = &self.frame_stack.frames[self.frame_stack.count - 1];
 
             // as it is known as comptime (const via build.zig), not compiled
             // if not needed (equivalent of #ifdef or #[cfg(feature...)])
@@ -208,6 +201,14 @@ pub const Vm = struct {
 
             switch (op_code) {
                 .Add => self.stack.push(try self.binop('+')),
+                .Call => {
+                    // Number of args
+                    const arg_count = frame.read_byte();
+                    // peek(arg_count) gives back the function obj, which is before args
+                    try self.call_value(self.stack.peek(arg_count), arg_count);
+
+                    frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+                },
                 .Constant => {
                     const value = frame.read_constant();
                     self.stack.push(value);
@@ -310,7 +311,22 @@ pub const Vm = struct {
                     print("\n", .{});
                 },
                 .Pop => _ = self.stack.pop(),
-                .Return => return,
+                .Return => {
+                    const result = self.stack.pop();
+                    self.frame_stack.count -= 1;
+
+                    if (self.frame_stack.count == 0) {
+                        // Main script object function
+                        _ = self.stack.pop();
+                        return;
+                    }
+
+                    // We set back the top at the beginning of the function
+                    // stack window, discarding all the parameters
+                    self.stack.top = frame.slots;
+                    self.stack.push(result);
+                    frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+                },
                 .SetGlobal => {
                     const name = frame.read_string();
 
@@ -332,6 +348,41 @@ pub const Vm = struct {
                 .True => self.stack.push(Value.bool_(true)),
             }
         }
+    }
+
+    fn call_value(self: *Self, callee: Value, arg_count: u8) VmErr!void {
+        // NOTE: type check forced because dynamically typed
+        if (callee.as_obj()) |obj| {
+            switch (obj.kind) {
+                .Fn => return self.call(obj.as(ObjFunction), arg_count),
+                else => {},
+            }
+        }
+
+        self.runtime_err("can only call function and structures");
+        return VmErr.RuntimeErr;
+    }
+
+    fn call(self: *Self, function: *ObjFunction, arg_count: u8) VmErr!void {
+        // NOTE: check necessary because one pass compiler
+        if (arg_count != function.arity) {
+            var buf: [250]u8 = undefined;
+            _ = try std.fmt.bufPrint(&buf, "expected {} arguments but got {}\n", .{ function.arity, arg_count });
+            self.runtime_err(&buf);
+            return error.RuntimeErr;
+        }
+
+        if (self.frame_stack.count == FrameStack.FRAMES_MAX) {
+            self.runtime_err("stack overflow");
+            return VmErr.RuntimeErr;
+        }
+
+        const frame = &self.frame_stack.frames[self.frame_stack.count];
+        frame.function = function;
+        frame.ip = function.chunk.code.items.ptr;
+        // Pointer arithmetic, -1 to go before function itself
+        frame.slots = self.stack.top - arg_count - 1;
+        self.frame_stack.count += 1;
     }
 
     fn binop(self: *Self, op: u8) Allocator.Error!Value {
@@ -391,10 +442,28 @@ pub const Vm = struct {
     }
 
     fn runtime_err(self: *const Self, msg: []const u8) void {
-        const frame = &self.frame_stack.frames[self.frame_stack.count - 1];
-        const line = frame.function.chunk.lines.items[self.instruction_nb()];
+        var frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+        var line = frame.function.chunk.lines.items[self.instruction_nb()];
+
         print("[line {}] in script: {s}\n", .{ line, msg });
-        // TODO: in repl mode, the stack is corrupted if we don't stop execution
+
+        for (0..self.frame_stack.count - 1) |i| {
+            frame = &self.frame_stack.frames[self.frame_stack.count - i];
+            const function = frame.function;
+            // -1 because we are already on the next instruction at this point
+            // and we want the one who failed
+            const addr1 = @intFromPtr(frame.ip - 1);
+            const addr2 = @intFromPtr(function.chunk.code.items.ptr);
+            const instruction = addr1 - addr2;
+            line = function.chunk.lines.items[instruction];
+            print("[line {}] in ", .{line});
+
+            if (function.name) |n| {
+                print("{}()\n", .{n});
+            } else {
+                print("script\n", .{});
+            }
+        }
     }
 
     // Only used in debug or runtime error, no performance required
