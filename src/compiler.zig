@@ -13,7 +13,6 @@ const ObjFunction = @import("obj.zig").ObjFunction;
 const Vm = @import("vm.zig").Vm;
 
 pub const ByteCodeGen = struct {
-    vm: *Vm,
     parser: Parser,
     compiler: Compiler,
 
@@ -21,19 +20,14 @@ pub const ByteCodeGen = struct {
 
     pub fn new() Self {
         return .{
-            .vm = undefined,
             .parser = Parser.init(),
             .compiler = Compiler.new(),
         };
     }
 
-    pub fn init(self: *Self, vm: *Vm) Allocator.Error!void {
-        self.vm = vm;
-        try self.compiler.init(self.vm, &self.parser, .Script);
-    }
-
     // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
-    pub fn compile(self: *Self, source: []const u8) Compiler.CompileErr!*ObjFunction {
+    pub fn compile(self: *Self, vm: *Vm, source: []const u8) Compiler.CompileErr!*ObjFunction {
+        try self.compiler.init(vm, &self.parser, .Script);
         self.parser.lexer.init(source);
         self.parser.advance();
 
@@ -628,7 +622,12 @@ pub const Compiler = struct {
             try self.emit_return();
         } else {
             try self.expression();
-            self.parser.consume(.NewLine, "expect nothing after return value");
+
+            // For the inline syntaxe: if true { return 0 }
+            if (!self.parser.check(.RightBrace)) {
+                self.parser.consume(.NewLine, "expect nothing after return value");
+            }
+
             try self.emit_byte(.Return);
         }
     }

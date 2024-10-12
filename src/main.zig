@@ -11,20 +11,26 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     var args = try std.process.ArgIterator.initWithAllocator(allocator);
+    defer args.deinit();
+
     _ = args.next(); // file name
 
     if (args.next()) |filename| {
-        try run_file(filename, allocator);
+        try run_file(filename);
     } else {
         try repl(allocator);
     }
 }
 
-fn run_file(filename: []const u8, allocator: std.mem.Allocator) !void {
+fn run_file(filename: []const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     const file = std.fs.cwd().openFile(filename, .{ .mode = .read_only }) catch |err| {
         var buf: [500]u8 = undefined;
         _ = try std.fmt.bufPrint(&buf, "Error: {}, unable to open file at: {s}\n", .{ err, filename });
-        @panic(&buf);
+        return err;
     };
     defer file.close();
 

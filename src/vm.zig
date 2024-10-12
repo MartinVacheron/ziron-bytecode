@@ -10,8 +10,14 @@ const Obj = @import("obj.zig").Obj;
 const ObjFunction = @import("obj.zig").ObjFunction;
 const ObjIter = @import("obj.zig").ObjIter;
 const ObjString = @import("obj.zig").ObjString;
+const ObjNativeFn = @import("obj.zig").ObjNativeFn;
+const NativeFn = @import("obj.zig").NativeFn;
 const Table = @import("table.zig").Table;
 const config = @import("config");
+
+fn clock_native(_: []const Value) Value {
+    return .{ .Float = @as(f64, @floatFromInt(std.time.milliTimestamp())) / 1000.0 };
+}
 
 const CallFrame = struct {
     function: *ObjFunction,
@@ -121,11 +127,10 @@ pub const Vm = struct {
 
     pub fn init(self: *Self) Allocator.Error!void {
         self.stack.init();
-        try self.bytecode_gen.init(self);
+        try self.define_native("clock", clock_native);
     }
 
     pub fn deinit(self: *Self) void {
-        self.frame_stack.frames[self.frame_stack.count - 1].function.chunk.deinit();
         self.free_objects();
         self.strings.deinit();
         self.globals.deinit();
@@ -153,6 +158,10 @@ pub const Vm = struct {
                 const iter = object.as(ObjIter);
                 self.allocator.destroy(iter);
             },
+            .NativeFn => {
+                const function = object.as(ObjNativeFn);
+                function.deinit(self.allocator);
+            },
             .String => {
                 const string = object.as(ObjString);
                 string.deinit(self.allocator);
@@ -161,7 +170,7 @@ pub const Vm = struct {
     }
 
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
-        const function = self.bytecode_gen.compile(source) catch |e| {
+        const function = self.bytecode_gen.compile(self, source) catch |e| {
             print("{}\n", .{e});
             return;
         };
@@ -327,6 +336,7 @@ pub const Vm = struct {
                     self.stack.push(result);
                     frame = &self.frame_stack.frames[self.frame_stack.count - 1];
                 },
+                // NOTE: we don't check if global already exists...
                 .SetGlobal => {
                     const name = frame.read_string();
 
@@ -355,6 +365,14 @@ pub const Vm = struct {
         if (callee.as_obj()) |obj| {
             switch (obj.kind) {
                 .Fn => return self.call(obj.as(ObjFunction), arg_count),
+                .NativeFn => {
+                    const function = obj.as(ObjNativeFn).function;
+                    const args = (self.stack.top - arg_count)[0..arg_count];
+                    const result = function(args);
+                    self.stack.top -= arg_count + 1;
+                    self.stack.push(result);
+                    return;
+                },
                 else => {},
             }
         }
@@ -439,6 +457,16 @@ pub const Vm = struct {
         @memcpy(res[obj1.chars.len..], obj2.chars);
 
         return Value.obj((try ObjString.take(self, res)).as_obj());
+    }
+
+    // Here, we put them in the stack because a GC could be triggered, so putting them
+    // in the stack ensure that the GC dosen't free them before use
+    fn define_native(self: *Self, name: []const u8, function: NativeFn) Allocator.Error!void {
+        self.stack.push(Value.obj((try ObjString.copy(self, name)).as_obj()));
+        self.stack.push(Value.obj((try ObjNativeFn.create(self, function)).as_obj()));
+        _ = try self.globals.set(self.stack.values[0].as_obj().?.as(ObjString), self.stack.values[1]);
+        _ = self.stack.pop();
+        _ = self.stack.pop();
     }
 
     fn runtime_err(self: *const Self, msg: []const u8) void {

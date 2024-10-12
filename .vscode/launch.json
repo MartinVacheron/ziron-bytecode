@@ -16,6 +16,17 @@
         {
             "type": "cppvsdbg",
             "request": "launch",
+            "name": "Debug playground",
+            "program": "${workspaceFolder}/zig-out/bin/rizon.exe",
+            "args": [
+                "${workspaceFolder}/playground.rz",
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
             "name": "Debug test",
             "program": "${workspaceFolder}/zig-out/bin/${fileBasenameNoExtension}-test",
             "args": [],

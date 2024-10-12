@@ -182,14 +182,13 @@ pub const ObjFunction = struct {
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.chunk.deinit();
 
-        if (self.name) |n| n.deinit(allocator);
+        // Name a, lready in the linked list, don't free manually
         allocator.destroy(self);
     }
 };
 
 // Many item pointer for args?
-// fn(args_count, args) result
-const NativeFn = fn (u8, []const Value) Value;
+pub const NativeFn = *const fn ([]const Value) Value;
 
 pub const ObjNativeFn = struct {
     obj: Obj,
@@ -205,5 +204,9 @@ pub const ObjNativeFn = struct {
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
         allocator.destroy(self);
+    }
+
+    pub fn as_obj(self: *ObjNativeFn) *Obj {
+        return &self.obj;
     }
 };
