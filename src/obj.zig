@@ -10,10 +10,12 @@ pub const Obj = struct {
     next: ?*Obj,
 
     const ObjKind = enum {
+        Closure,
         Fn,
         Iter,
         NativeFn,
         String,
+        UpValue,
     };
 
     pub fn allocate(vm: *Vm, comptime T: type, kind: ObjKind) Allocator.Error!*T {
@@ -40,25 +42,15 @@ pub const Obj = struct {
 
     pub fn print(self: *Obj, writer: anytype) void {
         switch (self.kind) {
-            .Fn => {
-                const function_name = self.as(ObjFunction).name orelse {
-                    writer.print("<script>", .{});
-                    return;
-                };
-
-                writer.print("<fn {s}>", .{function_name.chars});
-            },
+            .Closure => self.as(ObjClosure).function.print(writer),
+            .Fn => self.as(ObjFunction).print(writer),
             .Iter => {
                 const iter = self.as(ObjIter);
                 writer.print("iter: {} -> {}", .{ iter.current, iter.end });
             },
-            .NativeFn => {
-                writer.print("<native fn>", .{});
-            },
-            .String => {
-                const str = self.as(ObjString);
-                writer.print("\"{s}\"", .{str.chars});
-            },
+            .NativeFn => writer.print("<native fn>", .{}),
+            .String => writer.print("\"{s}\"", .{self.as(ObjString).chars}),
+            .UpValue => writer.print("puvalue", .{}),
         }
     }
 };
@@ -72,7 +64,7 @@ pub const ObjString = struct {
 
     // PERF: flexible array member: https://craftinginterpreters.com/strings.html#challenges
     fn create(vm: *Vm, str: []const u8, hash: u32) Allocator.Error!*ObjString {
-        var obj = try Obj.allocate(vm, ObjString, .String);
+        var obj = try Obj.allocate(vm, Self, .String);
         obj.chars = str;
         obj.hash = hash;
 
@@ -159,24 +151,34 @@ pub const ObjIter = struct {
 
 pub const ObjFunction = struct {
     obj: Obj,
-    arity: usize,
+    arity: u8,
     chunk: Chunk,
     name: ?*ObjString,
+    upvalue_count: u8,
 
     const Self = @This();
 
     pub fn create(vm: *Vm) Allocator.Error!*Self {
-        const obj = try Obj.allocate(vm, ObjFunction, .Fn);
+        const obj = try Obj.allocate(vm, Self, .Fn);
 
         obj.arity = 0;
-        obj.name = null;
         obj.chunk = Chunk.init(vm.allocator);
+        obj.name = null;
+        obj.upvalue_count = 0;
 
         return obj;
     }
 
     pub fn as_obj(self: *Self) *Obj {
         return &self.obj;
+    }
+
+    pub fn print(self: *const Self, writer: anytype) void {
+        if (self.name) |n| {
+            writer.print("<fn {s}>", .{n.chars});
+        } else {
+            writer.print("<script>", .{});
+        }
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -197,7 +199,7 @@ pub const ObjNativeFn = struct {
     const Self = @This();
 
     pub fn create(vm: *Vm, function: NativeFn) Allocator.Error!*Self {
-        const obj = try Obj.allocate(vm, ObjNativeFn, .NativeFn);
+        const obj = try Obj.allocate(vm, Self, .NativeFn);
         obj.function = function;
         return obj;
     }
@@ -208,5 +210,69 @@ pub const ObjNativeFn = struct {
 
     pub fn as_obj(self: *ObjNativeFn) *Obj {
         return &self.obj;
+    }
+};
+
+pub const ObjClosure = struct {
+    obj: Obj,
+    function: *ObjFunction,
+    upvalues: []?*ObjUpValue, // NOTE: do we really need nullable?
+    upvalue_count: u8,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, function: *ObjFunction) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, Self, .Closure);
+        obj.function = function;
+        obj.upvalues = try vm.allocator.alloc(?*ObjUpValue, function.upvalue_count);
+
+        // Need to null this out rather than leaving it
+        // uninitialized becaue the GC might try to look at it
+        // before it gets filled in with values
+        for (obj.upvalues) |*uv| {
+            uv.* = null;
+        }
+
+        obj.upvalue_count = function.upvalue_count;
+
+        return obj;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
+    }
+
+    // We don't destroy the function, closure don't own them. Multiple
+    // closure can refer to the same function
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.free(self.upvalues);
+        allocator.destroy(self);
+    }
+};
+
+pub const ObjUpValue = struct {
+    obj: Obj,
+    location: *Value,
+    next: ?*ObjUpValue,
+    closed: Value,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, slot: *Value) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, Self, .UpValue);
+        obj.location = slot;
+        obj.next = null;
+        obj.closed = Value.null_();
+
+        return obj;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
+    }
+
+    // IT dosen't own the variable
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.destroy(self);
     }
 };

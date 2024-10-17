@@ -2,6 +2,7 @@ const std = @import("std");
 const print = std.debug.print;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
+const ObjFunction = @import("obj.zig").ObjFunction;
 
 pub const Disassembler = struct {
     chunk: *const Chunk,
@@ -36,6 +37,31 @@ pub const Disassembler = struct {
         return switch (op) {
             .Add => simple_instruction("OP_ADD", offset),
             .Call => self.byte_instruction("OP_CALL", offset),
+            .CloseUpValue => simple_instruction("OP_CLOSE_UPVALUE", offset),
+            .Closure => {
+                print("{s:<16} ", .{"OP_CLOSURE"});
+
+                var local_offset = offset + 1;
+                const constant = self.chunk.code.items[local_offset];
+                local_offset += 1;
+
+                const obj = self.chunk.constants.items[constant].as_obj().?;
+                obj.print(std.debug);
+                print("\n", .{});
+
+                const obj_fn = obj.as(ObjFunction);
+
+                for (0..obj_fn.upvalue_count) |_| {
+                    const is_local = if (self.chunk.code.items[local_offset] == 1) "local" else "upvalue";
+                    local_offset += 1;
+                    const index = self.chunk.code.items[local_offset];
+                    local_offset += 1;
+
+                    print("{:>4}      |                     {s} {}\n", .{ local_offset - 2, is_local, index });
+                }
+
+                return local_offset;
+            },
             .Constant => self.constant_instruction("OP_CONSTANT", offset),
             .CreateIter => simple_instruction("OP_CREATE_ITER", offset),
             .DefineGlobal => self.constant_instruction("OP_DEFINE_GLOBAL", offset),
@@ -45,6 +71,7 @@ pub const Disassembler = struct {
             .ForIter => self.for_instruction("OP_FOR_ITER", 1, offset),
             .GetGlobal => self.constant_instruction("OP_GET_GLOBAL", offset),
             .GetLocal => self.byte_instruction("OP_GET_LOCAL", offset),
+            .GetUpvalue => self.byte_instruction("OP_GET_UPVALUE", offset),
             .Greater => simple_instruction("OP_GREATER", offset),
             .Jump => self.jump_instruction("OP_JUMP", 1, offset),
             .JumpIfFalse => self.jump_instruction("OP_JUMP_IF_FALSE", 1, offset),
@@ -59,6 +86,7 @@ pub const Disassembler = struct {
             .Return => simple_instruction("OP_RETURN", offset),
             .SetGlobal => self.constant_instruction("OP_SET_GLOBAL", offset),
             .SetLocal => self.byte_instruction("OP_SET_LOCAL", offset),
+            .SetUpvalue => self.byte_instruction("OP_SET_UPVALUE", offset),
             .Subtract => simple_instruction("OP_SUBTRACT", offset),
             .True => simple_instruction("OP_TRUE", offset),
         };

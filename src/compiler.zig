@@ -27,7 +27,7 @@ pub const ByteCodeGen = struct {
 
     // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
     pub fn compile(self: *Self, vm: *Vm, source: []const u8) Compiler.CompileErr!*ObjFunction {
-        try self.compiler.init(vm, &self.parser, .Script);
+        try self.compiler.init(vm, &self.parser, .Script, null);
         self.parser.lexer.init(source);
         self.parser.advance();
 
@@ -166,17 +166,25 @@ const FnKind = enum {
 const Local = struct {
     name: []const u8,
     depth: isize,
+    is_captured: bool,
+};
+
+const UpValue = struct {
+    index: u8,
+    is_local: bool,
 };
 
 // NOTE: avoided the enclosing compiler for now
 pub const Compiler = struct {
     vm: *Vm,
     parser: *Parser,
+    enclosing: ?*Compiler,
     function: *ObjFunction,
     kind: FnKind,
     locals: [std.math.maxInt(u8) + 1]Local,
     local_count: u8,
     scope_depth: usize,
+    upvalues: [std.math.maxInt(u8) + 1]UpValue,
 
     const Self = @This();
 
@@ -239,24 +247,27 @@ pub const Compiler = struct {
         return .{
             .vm = undefined,
             .parser = undefined,
+            .enclosing = null,
             .function = undefined,
             .kind = .Script,
-            .locals = [_]Local{.{ .name = undefined, .depth = 0 }} ** 256,
+            .locals = [_]Local{.{ .name = undefined, .depth = 0, .is_captured = false }} ** 256,
             .local_count = 0,
             .scope_depth = 0,
+            .upvalues = [_]UpValue{.{ .index = 0, .is_local = false }} ** 256,
         };
     }
 
-    pub fn init(self: *Self, vm: *Vm, parser: *Parser, kind: FnKind) Allocator.Error!void {
+    pub fn init(self: *Self, vm: *Vm, parser: *Parser, kind: FnKind, enclosing: ?*Self) Allocator.Error!void {
         self.vm = vm;
         self.parser = parser;
         self.kind = kind;
+        self.enclosing = enclosing;
         self.function = try ObjFunction.create(vm);
 
         // Because the first value in the stack will be the function object
         // itself. We keep the first slot empty to be aligned to runtime stack
         const first_local = &self.locals[0];
-        first_local.depth = 0;
+        // Depth and is_captured already init in array declaration
         first_local.name = "";
         self.local_count += 1;
     }
@@ -303,7 +314,12 @@ pub const Compiler = struct {
         self.scope_depth -= 1;
 
         while (self.local_count > 0 and self.locals[self.local_count - 1].depth > self.scope_depth) {
-            try self.emit_byte(.Pop);
+            if (self.locals[self.local_count - 1].is_captured) {
+                try self.emit_byte(.CloseUpValue);
+            } else {
+                try self.emit_byte(.Pop);
+            }
+
             self.local_count -= 1;
         }
     }
@@ -367,7 +383,6 @@ pub const Compiler = struct {
     fn resolve_local(self: *Self, token: *const Token) i16 {
         var i: u8 = self.local_count;
 
-        // NOTE: in book, >= 0, but if it is 0, there is no local
         while (i > 0) : (i -= 1) {
             const local = &self.locals[i - 1];
 
@@ -381,6 +396,56 @@ pub const Compiler = struct {
         }
 
         return -1;
+    }
+
+    /// Resolve upvalues in direct enclosing compiler if there is one, otherwise
+    /// returns -1.
+    /// We add the upavlue to the entire chain of enclosing compilers
+    // See book https://craftinginterpreters.com/closures.html#flattening-upvalues
+    fn resolve_upvalue(self: *Self, token: *const Token) i16 {
+        if (self.enclosing) |enclosing| {
+            const local_id = enclosing.resolve_local(token);
+
+            if (local_id != -1) {
+                return self.add_upvalue(@intCast(local_id), true);
+            }
+
+            const upvalue = enclosing.resolve_upvalue(token);
+
+            if (upvalue != -1) {
+                // We are forced to inform the enclosing like this because when
+                // we'll return to the enclosing to finish its compilation,
+                // the current compiler will be ended, we have no way anymore
+                // to know if a local was captured. We do it now.
+                enclosing.locals[@intCast(upvalue)].is_captured = true;
+                return self.add_upvalue(@intCast(upvalue), false);
+            }
+        }
+
+        return -1;
+    }
+
+    fn add_upvalue(self: *Self, index: u8, is_local: bool) i16 {
+        const upval_count = self.function.upvalue_count;
+
+        // Checks if the upvalue isn't already created
+        for (0..upval_count) |i| {
+            const upval = &self.upvalues[i];
+
+            if (upval.index == index and upval.is_local == is_local) {
+                return @intCast(i);
+            }
+        }
+
+        if (upval_count == std.math.maxInt(u8) + 1) {
+            self.parser.err("too many closure variables in function");
+            return 0;
+        }
+
+        self.upvalues[upval_count].is_local = is_local;
+        self.upvalues[upval_count].index = index;
+        self.function.upvalue_count += 1;
+        return upval_count;
     }
 
     // PERF: define multiple time the same one potentially
@@ -467,7 +532,7 @@ pub const Compiler = struct {
 
     fn parse_function(self: *Self, kind: FnKind) Allocator.Error!void {
         var compiler = Compiler.new();
-        try compiler.init(self.vm, self.parser, kind);
+        try compiler.init(self.vm, self.parser, kind, self);
 
         if (kind != .Script) {
             compiler.function.name = try ObjString.copy(self.vm, self.parser.previous.lexeme);
@@ -497,7 +562,12 @@ pub const Compiler = struct {
 
         try compiler.block();
         const obj_fn = try compiler.end_compiler();
-        try self.emit_bytes_u8(.Constant, try self.make_constant(Value.obj(obj_fn.as_obj())));
+        try self.emit_bytes_u8(.Closure, try self.make_constant(Value.obj(obj_fn.as_obj())));
+
+        for (0..obj_fn.upvalue_count) |i| {
+            try self.emit_byte_u8(if (compiler.upvalues[i].is_local) 1 else 0);
+            try self.emit_byte_u8(compiler.upvalues[i].index);
+        }
     }
 
     fn statement(self: *Self) Allocator.Error!void {
@@ -761,9 +831,16 @@ pub const Compiler = struct {
             set_op = .SetLocal;
             get_op = .GetLocal;
         } else {
-            var_id = try self.identifier_constant(name);
-            set_op = .SetGlobal;
-            get_op = .GetGlobal;
+            var_id = self.resolve_upvalue(name);
+
+            if (var_id != -1) {
+                set_op = .SetUpvalue;
+                get_op = .GetUpvalue;
+            } else {
+                var_id = try self.identifier_constant(name);
+                set_op = .SetGlobal;
+                get_op = .GetGlobal;
+            }
         }
 
         if (can_assign and self.parser.match(.Equal)) {
@@ -841,6 +918,11 @@ pub const Compiler = struct {
                 const name = if (obj) |o| o.chars else "<script>";
 
                 try dis.dis_chunk(name);
+
+                // If we compiled the outter compiler (no name), we put space
+                if (obj == null) {
+                    print("\n\n", .{});
+                }
             }
         }
 

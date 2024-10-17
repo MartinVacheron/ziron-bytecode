@@ -6,6 +6,8 @@ const Value = @import("values.zig").Value;
 pub const OpCode = enum(u8) {
     Add,
     Call,
+    CloseUpValue,
+    Closure,
     Constant,
     CreateIter,
     DefineGlobal,
@@ -15,6 +17,7 @@ pub const OpCode = enum(u8) {
     ForIter,
     GetGlobal,
     GetLocal,
+    GetUpvalue,
     Greater,
     Jump,
     JumpIfFalse,
@@ -29,6 +32,7 @@ pub const OpCode = enum(u8) {
     Return,
     SetGlobal,
     SetLocal,
+    SetUpvalue,
     Subtract,
     True,
 };

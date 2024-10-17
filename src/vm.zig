@@ -11,6 +11,8 @@ const ObjFunction = @import("obj.zig").ObjFunction;
 const ObjIter = @import("obj.zig").ObjIter;
 const ObjString = @import("obj.zig").ObjString;
 const ObjNativeFn = @import("obj.zig").ObjNativeFn;
+const ObjClosure = @import("obj.zig").ObjClosure;
+const ObjUpValue = @import("obj.zig").ObjUpValue;
 const NativeFn = @import("obj.zig").NativeFn;
 const Table = @import("table.zig").Table;
 const config = @import("config");
@@ -20,7 +22,7 @@ fn clock_native(_: []const Value) Value {
 }
 
 const CallFrame = struct {
-    function: *ObjFunction,
+    closure: *ObjClosure,
     ip: [*]u8,
     slots: [*]Value,
 
@@ -33,7 +35,7 @@ const CallFrame = struct {
     }
 
     pub fn read_constant(self: *Self) Value {
-        return self.function.chunk.constants.items[self.read_byte()];
+        return self.closure.function.chunk.constants.items[self.read_byte()];
     }
 
     pub fn read_string(self: *Self) *ObjString {
@@ -106,6 +108,7 @@ pub const Vm = struct {
     strings: Table,
     globals: Table,
     frame_stack: FrameStack,
+    open_upvalues: ?*ObjUpValue,
 
     const Self = @This();
 
@@ -122,6 +125,7 @@ pub const Vm = struct {
             .strings = Table.init(allocator),
             .globals = Table.init(allocator),
             .frame_stack = FrameStack.new(),
+            .open_upvalues = null,
         };
     }
 
@@ -147,13 +151,11 @@ pub const Vm = struct {
 
     fn free_object(self: *Self, object: *Obj) void {
         switch (object.kind) {
+            .Closure => object.as(ObjClosure).deinit(self.allocator),
             .Fn => {
                 const function = object.as(ObjFunction);
                 function.deinit(self.allocator);
             },
-            // NOTE: does iter really needs to be an Obj?
-            // check memory footprint on the tagged union if
-            // we put it with the others Value
             .Iter => {
                 const iter = object.as(ObjIter);
                 self.allocator.destroy(iter);
@@ -166,6 +168,10 @@ pub const Vm = struct {
                 const string = object.as(ObjString);
                 string.deinit(self.allocator);
             },
+            .UpValue => {
+                const upval = object.as(ObjUpValue);
+                upval.deinit(self.allocator);
+            },
         }
     }
 
@@ -176,7 +182,11 @@ pub const Vm = struct {
         };
         self.stack.push(Value.obj(function.as_obj()));
 
-        try self.call(function, 0);
+        const closure = try ObjClosure.create(self, function);
+        _ = self.stack.pop();
+        self.stack.push(Value.obj(closure.as_obj()));
+
+        try self.call(closure, 0);
         try self.run();
     }
 
@@ -201,7 +211,7 @@ pub const Vm = struct {
             // if not needed (equivalent of #ifdef or #[cfg(feature...)])
             if (config.TRACING) {
                 const Dis = @import("disassembler.zig").Disassembler;
-                const dis = Dis.init(&frame.function.chunk);
+                const dis = Dis.init(&frame.closure.function.chunk);
                 _ = dis.dis_instruction(self.instruction_nb());
             }
 
@@ -217,6 +227,31 @@ pub const Vm = struct {
                     try self.call_value(self.stack.peek(arg_count), arg_count);
 
                     frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+                },
+                .CloseUpValue => {
+                    self.close_upvalues(self.stack.top - 1);
+                    // Discard the stack slot, old local stack variable lives on the heap now
+                    _ = self.stack.pop();
+                },
+                .Closure => {
+                    const function = frame.read_constant().as_obj().?.as(ObjFunction);
+                    const closure = try ObjClosure.create(self, function);
+                    self.stack.push(Value.obj(closure.as_obj()));
+
+                    for (0..closure.upvalue_count) |i| {
+                        const is_local = frame.read_byte();
+                        const index = frame.read_byte();
+
+                        // When compiled, we walk the entire compiler linked list until we find
+                        // then one where the upvalue is a local var. If it is local, it's on
+                        // the stack, so we just give a ptr to it. Other with, the index is the
+                        // index in the enclosing compiler's upvalue array
+                        if (is_local == 1) {
+                            closure.upvalues[i] = try self.capture_upvalue(&(frame.slots + index)[0]);
+                        } else {
+                            closure.upvalues[i] = frame.closure.upvalues[index];
+                        }
+                    }
                 },
                 .Constant => {
                     const value = frame.read_constant();
@@ -276,6 +311,11 @@ pub const Vm = struct {
                     const index = frame.read_byte();
                     self.stack.push(frame.slots[index]);
                 },
+                .GetUpvalue => {
+                    const slot = frame.read_byte();
+                    // NOTE: do we really need nullable?
+                    self.stack.push(frame.closure.upvalues[slot].?.location.*);
+                },
                 .Greater => self.stack.push(try self.binop('>')),
                 .Jump => {
                     const offset = frame.read_short();
@@ -322,6 +362,8 @@ pub const Vm = struct {
                 .Pop => _ = self.stack.pop(),
                 .Return => {
                     const result = self.stack.pop();
+                    // Close every remaining open upvalues owned by the returning function.
+                    self.close_upvalues(frame.slots);
                     self.frame_stack.count -= 1;
 
                     if (self.frame_stack.count == 0) {
@@ -354,6 +396,10 @@ pub const Vm = struct {
                     const index = frame.read_byte();
                     frame.slots[index] = self.stack.peek(0);
                 },
+                .SetUpvalue => {
+                    const index = frame.read_byte();
+                    frame.closure.upvalues[index].?.location.* = self.stack.peek(0);
+                },
                 .Subtract => self.stack.push(try self.binop('-')),
                 .True => self.stack.push(Value.bool_(true)),
             }
@@ -364,7 +410,7 @@ pub const Vm = struct {
         // NOTE: type check forced because dynamically typed
         if (callee.as_obj()) |obj| {
             switch (obj.kind) {
-                .Fn => return self.call(obj.as(ObjFunction), arg_count),
+                .Closure => return self.call(callee.as_obj().?.as(ObjClosure), arg_count),
                 .NativeFn => {
                     const function = obj.as(ObjNativeFn).function;
                     const args = (self.stack.top - arg_count)[0..arg_count];
@@ -381,11 +427,11 @@ pub const Vm = struct {
         return VmErr.RuntimeErr;
     }
 
-    fn call(self: *Self, function: *ObjFunction, arg_count: u8) VmErr!void {
+    fn call(self: *Self, closure: *ObjClosure, arg_count: u8) VmErr!void {
         // NOTE: check necessary because one pass compiler
-        if (arg_count != function.arity) {
+        if (arg_count != closure.function.arity) {
             var buf: [250]u8 = undefined;
-            _ = try std.fmt.bufPrint(&buf, "expected {} arguments but got {}\n", .{ function.arity, arg_count });
+            _ = try std.fmt.bufPrint(&buf, "expected {} arguments but got {}\n", .{ closure.function.arity, arg_count });
             self.runtime_err(&buf);
             return error.RuntimeErr;
         }
@@ -396,11 +442,61 @@ pub const Vm = struct {
         }
 
         const frame = &self.frame_stack.frames[self.frame_stack.count];
-        frame.function = function;
-        frame.ip = function.chunk.code.items.ptr;
+        frame.closure = closure;
+        frame.ip = closure.function.chunk.code.items.ptr;
         // Pointer arithmetic, -1 to go before function itself
         frame.slots = self.stack.top - arg_count - 1;
         self.frame_stack.count += 1;
+    }
+
+    // Open upvalues are an intrusive linked list, the first element is always the
+    // last created. Usefull because the close up values are near the closure itself,
+    // so near the values on top of stack
+    fn capture_upvalue(self: *Self, local: *Value) Allocator.Error!*ObjUpValue {
+        var prev_upval: ?*ObjUpValue = null;
+        var upval = self.open_upvalues;
+
+        // We look if the value has already been closed over. We check until
+        // we point to a location lower than local we want to close over. It
+        // means that we passed its point on the stack so it's impossible that is
+        // has already been closed over. This is because the list is sorted
+        while (upval) |uv| {
+            if (@intFromPtr(uv.location) > @intFromPtr(local)) {
+                prev_upval = upval;
+                upval = uv.next;
+            } else {
+                break;
+            }
+        }
+
+        // We found an UpValue already closed over the variable, we reuse it
+        if (upval) |uv| {
+            if (uv.location == local) return uv;
+        }
+
+        const created_upvalue = try ObjUpValue.create(self, local);
+        created_upvalue.next = upval;
+
+        // Insertion in-between
+        if (prev_upval) |prev_uv| {
+            prev_uv.next = created_upvalue;
+        } else {
+            self.open_upvalues = created_upvalue;
+        }
+
+        return created_upvalue;
+    }
+
+    fn close_upvalues(self: *Self, last: [*]Value) void {
+        while (self.open_upvalues) |open_upval| {
+            if (@intFromPtr(open_upval) >= @intFromPtr(last)) {
+                open_upval.closed = open_upval.location.*;
+                open_upval.location = &open_upval.closed;
+                self.open_upvalues = open_upval.next;
+            } else {
+                break;
+            }
+        }
     }
 
     fn binop(self: *Self, op: u8) Allocator.Error!Value {
@@ -471,13 +567,13 @@ pub const Vm = struct {
 
     fn runtime_err(self: *const Self, msg: []const u8) void {
         var frame = &self.frame_stack.frames[self.frame_stack.count - 1];
-        var line = frame.function.chunk.lines.items[self.instruction_nb()];
+        var line = frame.closure.function.chunk.lines.items[self.instruction_nb()];
 
         print("[line {}] in script: {s}\n", .{ line, msg });
 
         for (0..self.frame_stack.count - 1) |i| {
             frame = &self.frame_stack.frames[self.frame_stack.count - i];
-            const function = frame.function;
+            const function = frame.closure.function;
             // -1 because we are already on the next instruction at this point
             // and we want the one who failed
             const addr1 = @intFromPtr(frame.ip - 1);
@@ -498,7 +594,7 @@ pub const Vm = struct {
     fn instruction_nb(self: *const Self) usize {
         const frame = &self.frame_stack.frames[self.frame_stack.count - 1];
         const addr1 = @intFromPtr(frame.ip);
-        const addr2 = @intFromPtr(frame.function.chunk.code.items.ptr);
+        const addr2 = @intFromPtr(frame.closure.function.chunk.code.items.ptr);
         return addr1 - addr2;
     }
 };
