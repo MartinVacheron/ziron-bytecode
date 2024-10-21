@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const config = @import("config");
 const Vm = @import("vm.zig").Vm;
 const Chunk = @import("chunk.zig").Chunk;
 const Value = @import("values.zig").Value;
@@ -8,6 +9,7 @@ const Value = @import("values.zig").Value;
 pub const Obj = struct {
     kind: ObjKind,
     next: ?*Obj,
+    is_marked: bool,
 
     const ObjKind = enum {
         Closure,
@@ -26,10 +28,42 @@ pub const Obj = struct {
         ptr.obj = Obj{
             .kind = kind,
             .next = vm.objects,
+            .is_marked = false,
         };
 
         vm.objects = &ptr.obj;
+
+        if (config.LOG_GC) {
+            print("{*} allocate {} for {s}\n", .{ @intFromPtr(ptr), @sizeOf(T), kind });
+        }
+
         return ptr;
+    }
+
+    pub fn destroy(self: *Obj, vm: *Vm) void {
+        switch (self.kind) {
+            .Closure => self.as(ObjClosure).deinit(vm.allocator),
+            .Fn => {
+                const function = self.as(ObjFunction);
+                function.deinit(vm.allocator);
+            },
+            .Iter => {
+                const iter = self.as(ObjIter);
+                vm.allocator.destroy(iter);
+            },
+            .NativeFn => {
+                const function = self.as(ObjNativeFn);
+                function.deinit(vm.allocator);
+            },
+            .String => {
+                const string = self.as(ObjString);
+                string.deinit(vm.allocator);
+            },
+            .UpValue => {
+                const upval = self.as(ObjUpValue);
+                upval.deinit(vm.allocator);
+            },
+        }
     }
 
     pub fn as(self: *Obj, comptime T: type) *T {
@@ -68,7 +102,12 @@ pub const ObjString = struct {
         obj.chars = str;
         obj.hash = hash;
 
+        // The set method can trigger a GC to grow hashmap before
+        // inserting. We put the value on the stack so that it is marked
+        // as a root
+        vm.stack.push(Value.obj(obj.as_obj()));
         _ = try vm.strings.set(obj, Value.null_());
+        _ = vm.stack.pop();
 
         return obj;
     }
@@ -184,7 +223,7 @@ pub const ObjFunction = struct {
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.chunk.deinit();
 
-        // Name a, lready in the linked list, don't free manually
+        // Name already in the linked list, don't free manually
         allocator.destroy(self);
     }
 };
@@ -271,7 +310,7 @@ pub const ObjUpValue = struct {
         return &self.obj;
     }
 
-    // IT dosen't own the variable
+    // It dosen't own the variable
     pub fn deinit(self: *Self, allocator: Allocator) void {
         allocator.destroy(self);
     }

@@ -24,7 +24,11 @@ pub fn main() !void {
 
 fn run_file(filename: []const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer {
+        const status = gpa.deinit();
+        std.debug.assert(status == .ok);
+    }
+
     const allocator = gpa.allocator();
 
     const file = std.fs.cwd().openFile(filename, .{ .mode = .read_only }) catch |err| {

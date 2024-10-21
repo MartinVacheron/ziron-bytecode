@@ -1,6 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const print = std.debug.print;
+const config = @import("config");
+const Gc = @import("gc.zig").Gc;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("values.zig").Value;
@@ -15,7 +17,6 @@ const ObjClosure = @import("obj.zig").ObjClosure;
 const ObjUpValue = @import("obj.zig").ObjUpValue;
 const NativeFn = @import("obj.zig").NativeFn;
 const Table = @import("table.zig").Table;
-const config = @import("config");
 
 fn clock_native(_: []const Value) Value {
     return .{ .Float = @as(f64, @floatFromInt(std.time.milliTimestamp())) / 1000.0 };
@@ -84,12 +85,12 @@ const Stack = struct {
         self.top = self.values[0..].ptr;
     }
 
-    fn push(self: *Self, value: Value) void {
+    pub fn push(self: *Self, value: Value) void {
         self.top[0] = value;
         self.top += 1;
     }
 
-    fn pop(self: *Self) Value {
+    pub fn pop(self: *Self) Value {
         self.top -= 1;
         return self.top[0];
     }
@@ -101,9 +102,10 @@ const Stack = struct {
 };
 
 pub const Vm = struct {
+    gc: Gc,
+    allocator: Allocator,
     stack: Stack,
     bytecode_gen: ByteCodeGen,
-    allocator: Allocator,
     objects: ?*Obj,
     strings: Table,
     globals: Table,
@@ -118,60 +120,41 @@ pub const Vm = struct {
 
     pub fn new(allocator: Allocator) Self {
         return .{
+            .gc = Gc.init(allocator),
+            .allocator = undefined,
             .stack = Stack.new(),
             .bytecode_gen = ByteCodeGen.new(),
-            .allocator = allocator,
             .objects = null,
-            .strings = Table.init(allocator),
-            .globals = Table.init(allocator),
+            .strings = undefined,
+            .globals = undefined,
             .frame_stack = FrameStack.new(),
             .open_upvalues = null,
         };
     }
 
     pub fn init(self: *Self) Allocator.Error!void {
+        self.gc.link(self, &self.bytecode_gen.compiler);
+        self.allocator = self.gc.allocator();
+
         self.stack.init();
+        self.strings = Table.init(self.gc.allocator());
+        self.globals = Table.init(self.gc.allocator());
+
         try self.define_native("clock", clock_native);
     }
 
     pub fn deinit(self: *Self) void {
-        self.free_objects();
         self.strings.deinit();
         self.globals.deinit();
+        self.free_objects();
     }
 
     fn free_objects(self: *Self) void {
         var object = self.objects;
         while (object) |obj| {
             const next = obj.next;
-            self.free_object(obj);
+            obj.destroy(self);
             object = next;
-        }
-    }
-
-    fn free_object(self: *Self, object: *Obj) void {
-        switch (object.kind) {
-            .Closure => object.as(ObjClosure).deinit(self.allocator),
-            .Fn => {
-                const function = object.as(ObjFunction);
-                function.deinit(self.allocator);
-            },
-            .Iter => {
-                const iter = object.as(ObjIter);
-                self.allocator.destroy(iter);
-            },
-            .NativeFn => {
-                const function = object.as(ObjNativeFn);
-                function.deinit(self.allocator);
-            },
-            .String => {
-                const string = object.as(ObjString);
-                string.deinit(self.allocator);
-            },
-            .UpValue => {
-                const upval = object.as(ObjUpValue);
-                upval.deinit(self.allocator);
-            },
         }
     }
 
@@ -500,12 +483,18 @@ pub const Vm = struct {
     }
 
     fn binop(self: *Self, op: u8) Allocator.Error!Value {
-        const v2 = self.stack.pop();
-        const v1 = self.stack.pop();
+        // We peek first because if we pop and then the concatenation triggers
+        // a GC, we could loose the two strings poped from the stack as they aren't
+        // roots anymore
+        const v2 = self.stack.peek(0);
+        const v1 = self.stack.peek(1);
 
         if (v1 == .Obj and v2 == .Obj) {
             return try self.concatenate(v1, v2);
         }
+
+        _ = self.stack.pop();
+        _ = self.stack.pop();
 
         if ((v1 != .Int and v1 != .Float) or (v2 != .Int and v2 != .Float)) {
             self.runtime_err("binary operation only allowed between ints or floats");

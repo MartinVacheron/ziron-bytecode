@@ -5,13 +5,17 @@ pub const BuildOptions = struct {
     tracing: bool = false,
     print_stack: bool = false,
     print_code: bool = false,
+    stress_gc: bool = false,
+    log_gc: bool = false,
 
     fn from_builder(b: *std.Build) BuildOptions {
         const tracing = b.option(bool, "tracing", "trace execution of each instruction") orelse false;
         const print_stack = b.option(bool, "print_stack", "prints the stack on each instruction") orelse false;
         const print_code = b.option(bool, "print_code", "prints the compiled code") orelse false;
+        const stress_gc = b.option(bool, "stress_gc", "triggers GC as often as possible") orelse false;
+        const log_gc = b.option(bool, "log_gc", "prints GC logs") orelse false;
 
-        return .{ .tracing = tracing, .print_stack = print_stack, .print_code = print_code };
+        return .{ .tracing = tracing, .print_stack = print_stack, .print_code = print_code, .stress_gc = stress_gc, .log_gc = log_gc };
     }
 };
 
@@ -21,6 +25,8 @@ pub fn build(b: *std.Build) void {
     options.addOption(@TypeOf(opts.tracing), "TRACING", opts.tracing);
     options.addOption(@TypeOf(opts.print_stack), "PRINT_STACK", opts.print_stack);
     options.addOption(@TypeOf(opts.print_code), "PRINT_CODE", opts.print_code);
+    options.addOption(@TypeOf(opts.stress_gc), "STRESS_GC", opts.stress_gc);
+    options.addOption(@TypeOf(opts.log_gc), "LOG_GC", opts.log_gc);
 
     const optimization = b.standardOptimizeOption(.{});
 
