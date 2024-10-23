@@ -13,11 +13,11 @@ const Compiler = @import("compiler.zig").Compiler;
 
 pub const Gc = struct {
     vm: *Vm,
-    compiler: *Compiler,
     parent_allocator: Allocator,
-    grays: std.SinglyLinkedList(*Obj),
+    grays: std.ArrayList(*Obj),
     bytes_allocated: usize,
     next_gc: usize,
+    active: bool,
 
     const Self = @This();
     const GROW_FACTOR = 2;
@@ -25,22 +25,26 @@ pub const Gc = struct {
     pub fn init(parent_allocator: Allocator) Self {
         return .{
             .vm = undefined,
-            .compiler = undefined,
+            // .compiler = undefined,
             .parent_allocator = parent_allocator,
-            .grays = std.SinglyLinkedList(*Obj){},
+            .grays = std.ArrayList(*Obj).init(parent_allocator),
             .bytes_allocated = 0,
             .next_gc = 1024 * 1024,
+            .active = false,
         };
     }
 
-    pub fn link(self: *Self, vm: *Vm, compiler: *Compiler) void {
+    pub fn deinit(self: *Self) void {
+        self.grays.deinit();
+    }
+
+    pub fn link(self: *Self, vm: *Vm) void {
         self.vm = vm;
-        self.compiler = compiler;
     }
 
     pub fn collect_garbage(self: *Self) Allocator.Error!void {
         if (config.LOG_GC) {
-            print("-- GC begin\n", .{});
+            print("\n-- GC begin\n", .{});
         }
 
         const bytes_before = self.bytes_allocated;
@@ -54,7 +58,7 @@ pub const Gc = struct {
 
         if (config.LOG_GC) {
             print("-- GC end\n", .{});
-            print("   collected {} bytes (from {} to {}), next at {}\n", .{ bytes_before - self.bytes_allocated, bytes_before, self.bytes_allocated, self.next_gc });
+            print("   collected {} bytes (from {} to {}), next at {}\n\n", .{ bytes_before - self.bytes_allocated, bytes_before, self.bytes_allocated, self.next_gc });
         }
     }
 
@@ -64,9 +68,8 @@ pub const Gc = struct {
         }
 
         try self.mark_table(&self.vm.globals);
-        try self.mark_compiler_roots();
 
-        for (&self.vm.frame_stack.frames) |*frame| {
+        for (self.vm.frame_stack.frames[0..self.vm.frame_stack.count]) |*frame| {
             try self.mark_object(frame.closure.as_obj());
         }
 
@@ -77,14 +80,9 @@ pub const Gc = struct {
     }
 
     fn trace_reference(self: *Self) Allocator.Error!void {
-        var node = self.grays.first;
-        while (node) |n| {
-            node = n.next;
-
-            try self.blacken_object(n.data);
-            // No longer in the gray stack
-            self.grays.remove(n);
-            self.parent_allocator.destroy(n);
+        while (self.grays.items.len > 0) {
+            const obj = self.grays.pop();
+            try self.blacken_object(obj);
         }
     }
 
@@ -109,7 +107,9 @@ pub const Gc = struct {
             },
             .Fn => {
                 const function = obj.as(ObjFunction);
-                try self.mark_object(function.name.?.as_obj());
+                if (function.name) |name| {
+                    try self.mark_object(name.as_obj());
+                }
                 try self.mark_array(&function.chunk.constants);
             },
             .UpValue => try self.mark_value(&obj.as(ObjUpValue).closed),
@@ -147,7 +147,11 @@ pub const Gc = struct {
                     self.vm.objects = object;
                 }
 
-                self.allocator().destroy(unreached);
+                if (config.LOG_GC) {
+                    print("{*} sweep\n", .{unreached});
+                }
+
+                unreached.destroy(self.vm);
             }
         }
     }
@@ -156,7 +160,8 @@ pub const Gc = struct {
         if (value.as_obj()) |obj| try self.mark_object(obj);
     }
 
-    fn mark_object(self: *Self, obj: ?*Obj) Allocator.Error!void {
+    // pub because called once by the compiler
+    pub fn mark_object(self: *Self, obj: ?*Obj) Allocator.Error!void {
         if (obj) |o| {
             if (o.is_marked) return;
 
@@ -168,12 +173,7 @@ pub const Gc = struct {
 
             o.is_marked = true;
 
-            const node = try self.parent_allocator.create(std.SinglyLinkedList(*Obj).Node);
-            node.data = o;
-
-            // https://github.com/arjaz/interzig/blob/master/src/gc.zig#L166
-            // Insert at end
-            self.grays.prepend(node);
+            try self.grays.append(o);
         }
     }
 
@@ -190,20 +190,12 @@ pub const Gc = struct {
         for (array.items) |*value| try self.mark_value(value);
     }
 
-    fn mark_compiler_roots(self: *Self) Allocator.Error!void {
-        var compiler: ?*Compiler = self.compiler;
-
-        while (compiler) |c| : (compiler = c.enclosing) {
-            try self.mark_object(c.function.as_obj());
-        }
-    }
-
-    // NOTE: can just use *Self?
+    /// Calling alloc triggers the GC before allocating
     pub fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
         self.bytes_allocated += len;
-        if (self.bytes_allocated > self.next_gc or config.STRESS_GC) {
+        if (self.active and (self.bytes_allocated > self.next_gc or config.STRESS_GC)) {
             self.collect_garbage() catch return null;
         }
 
@@ -223,7 +215,7 @@ pub const Gc = struct {
 
         self.bytes_allocated += new_len - buf.len;
 
-        if (self.bytes_allocated > self.next_gc or config.STRESS_GC) {
+        if (self.active and (self.bytes_allocated > self.next_gc or config.STRESS_GC)) {
             self.collect_garbage() catch return false;
         }
 

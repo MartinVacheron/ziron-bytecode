@@ -12,38 +12,26 @@ const ObjString = @import("obj.zig").ObjString;
 const ObjFunction = @import("obj.zig").ObjFunction;
 const Vm = @import("vm.zig").Vm;
 
-pub const ByteCodeGen = struct {
-    parser: Parser,
-    compiler: Compiler,
+pub fn compile(vm: *Vm, source: []const u8) Compiler.CompileErr!*ObjFunction {
+    var parser = Parser.init();
+    parser.lexer.init(source);
+    parser.advance();
 
-    const Self = @This();
+    var compiler = Compiler.new();
+    try compiler.init(vm, &parser, .Script, null);
 
-    pub fn new() Self {
-        return .{
-            .parser = Parser.init(),
-            .compiler = Compiler.new(),
-        };
+    while (!parser.match(.Eof)) {
+        parser.skip_new_lines();
+        try compiler.declaration();
+        parser.skip_new_lines();
+
+        if (parser.panic_mode) parser.synchronize();
     }
 
-    // NOTE: for ternary https://chidiwilliams.com/posts/on-recursive-descent-and-pratt-parsing
-    pub fn compile(self: *Self, vm: *Vm, source: []const u8) Compiler.CompileErr!*ObjFunction {
-        try self.compiler.init(vm, &self.parser, .Script, null);
-        self.parser.lexer.init(source);
-        self.parser.advance();
+    const func = try compiler.end_compiler();
 
-        while (!self.parser.match(.Eof)) {
-            self.parser.skip_new_lines();
-            try self.compiler.declaration();
-            self.parser.skip_new_lines();
-
-            if (self.parser.panic_mode) self.parser.synchronize();
-        }
-
-        const func = try self.compiler.end_compiler();
-
-        return if (self.parser.had_error) error.CompileErr else func;
-    }
-};
+    return if (parser.had_error) error.CompileErr else func;
+}
 
 const Precedence = enum {
     None,
@@ -262,7 +250,13 @@ pub const Compiler = struct {
         self.parser = parser;
         self.kind = kind;
         self.enclosing = enclosing;
-        self.function = try ObjFunction.create(vm);
+
+        var name: ?*ObjString = null;
+        if (kind != .Script) {
+            name = try ObjString.copy(self.vm, self.parser.previous.lexeme);
+        }
+
+        self.function = try ObjFunction.create(vm, name);
 
         // Because the first value in the stack will be the function object
         // itself. We keep the first slot empty to be aligned to runtime stack
@@ -534,10 +528,6 @@ pub const Compiler = struct {
         var compiler = Compiler.new();
         try compiler.init(self.vm, self.parser, kind, self);
 
-        if (kind != .Script) {
-            compiler.function.name = try ObjString.copy(self.vm, self.parser.previous.lexeme);
-        }
-
         compiler.begin_scope();
 
         compiler.parser.consume_skip(.LeftParen, "expect '(' after function name");
@@ -621,13 +611,13 @@ pub const Compiler = struct {
         try self.statement();
 
         const else_jump = try self.emit_jump(.Jump);
-        self.patch_jump(then_jump);
+        self.patch_jump(then_jump, 0);
 
         // Pop the condition inside else branch if the condition is false
         try self.emit_byte(.Pop);
 
         if (self.parser.match(.Else)) try self.statement();
-        self.patch_jump(else_jump);
+        self.patch_jump(else_jump, 0);
     }
 
     fn while_statement(self: *Self) Allocator.Error!void {
@@ -644,7 +634,7 @@ pub const Compiler = struct {
         try self.statement();
         try self.emit_loop(loop_start);
 
-        self.patch_jump(exit_jump);
+        self.patch_jump(exit_jump, 0);
         try self.emit_byte(.Pop);
     }
 
@@ -677,8 +667,12 @@ pub const Compiler = struct {
         // redeclare the same var as the placeholder
         try self.statement();
         try self.emit_loop(loop_start);
-        // +1 because we jump 16bits for jump operand and the iterator index
-        self.patch_jump(exit_jump);
+
+        // We use the speciall offset to jump 1 more back because patch jump
+        // internally jumps 2 backward to jump over the jump OpCode itself
+        // (composed of two parts). Here, we also need to jump over the iterator
+        // index on the stack
+        self.patch_jump(exit_jump, 1);
 
         try self.end_scope();
     }
@@ -711,7 +705,7 @@ pub const Compiler = struct {
         // evaluate the rhs which become the result of the 'and'
         try self.emit_byte(.Pop);
         try self.parse_precedence(.And);
-        self.patch_jump(end_jump);
+        self.patch_jump(end_jump, 0);
     }
 
     // PERF: create a specific instruction to jump if true
@@ -724,10 +718,10 @@ pub const Compiler = struct {
         // If the first is true, we haven't jump and we can
         // now jump to the next part
         const end_jump = try self.emit_jump(.Jump);
-        self.patch_jump(else_jump);
+        self.patch_jump(else_jump, 0);
         try self.emit_byte(.Pop);
         try self.parse_precedence(.Or);
-        self.patch_jump(end_jump);
+        self.patch_jump(end_jump, 0);
     }
 
     // In the book, expr_stmt is: expr + ;
@@ -877,10 +871,13 @@ pub const Compiler = struct {
         return self.get_chunk().code.items.len - 2;
     }
 
-    fn patch_jump(self: *Self, offset: usize) void {
+    /// Patches the jump.
+    /// The `special` argument is to add an additionnal offset when needed (
+    /// for example when patching a `.ForIter`
+    fn patch_jump(self: *Self, offset: usize, special: usize) void {
         // -2 is the jump offset itself
         const chunk = self.get_chunk();
-        const jump: u16 = @intCast(chunk.code.items.len - offset - 2);
+        const jump: u16 = @intCast(chunk.code.items.len - offset - 2 - special);
 
         // FIXME: it's already casted in u16, check is useless. Check before cast?
         if (jump > std.math.maxInt(u16)) {

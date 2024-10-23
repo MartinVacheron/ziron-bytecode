@@ -34,7 +34,7 @@ pub const Obj = struct {
         vm.objects = &ptr.obj;
 
         if (config.LOG_GC) {
-            print("{*} allocate {} for {s}\n", .{ @intFromPtr(ptr), @sizeOf(T), kind });
+            std.debug.print("{*} allocate {} bytes  ", .{ ptr, @sizeOf(T) });
         }
 
         return ptr;
@@ -69,8 +69,6 @@ pub const Obj = struct {
     pub fn as(self: *Obj, comptime T: type) *T {
         comptime assert(@hasField(T, "obj"));
 
-        // Obj is aligned on 1 byte, *T on 8 (i beleve this is why its mandatory)
-        // NOTE: Why is it aligned 1 byte?
         return @alignCast(@fieldParentPtr("obj", self));
     }
 
@@ -108,6 +106,10 @@ pub const ObjString = struct {
         vm.stack.push(Value.obj(obj.as_obj()));
         _ = try vm.strings.set(obj, Value.null_());
         _ = vm.stack.pop();
+
+        if (config.LOG_GC) {
+            std.debug.print("{s}\n", .{str});
+        }
 
         return obj;
     }
@@ -171,6 +173,10 @@ pub const ObjIter = struct {
         iter.end = end;
         iter.current = 0;
 
+        if (config.LOG_GC) {
+            std.debug.print("0 -> {}\n", .{end});
+        }
+
         return iter;
     }
 
@@ -197,13 +203,18 @@ pub const ObjFunction = struct {
 
     const Self = @This();
 
-    pub fn create(vm: *Vm) Allocator.Error!*Self {
+    pub fn create(vm: *Vm, name: ?*ObjString) Allocator.Error!*Self {
         const obj = try Obj.allocate(vm, Self, .Fn);
 
         obj.arity = 0;
         obj.chunk = Chunk.init(vm.allocator);
-        obj.name = null;
+        obj.name = name;
         obj.upvalue_count = 0;
+
+        if (config.LOG_GC) {
+            const display_name = if (name) |n| n.chars else "";
+            std.debug.print("{s}\n", .{display_name});
+        }
 
         return obj;
     }
@@ -240,6 +251,9 @@ pub const ObjNativeFn = struct {
     pub fn create(vm: *Vm, function: NativeFn) Allocator.Error!*Self {
         const obj = try Obj.allocate(vm, Self, .NativeFn);
         obj.function = function;
+
+        if (config.LOG_GC) std.debug.print("\n", .{});
+
         return obj;
     }
 
@@ -261,18 +275,26 @@ pub const ObjClosure = struct {
     const Self = @This();
 
     pub fn create(vm: *Vm, function: *ObjFunction) Allocator.Error!*Self {
-        const obj = try Obj.allocate(vm, Self, .Closure);
-        obj.function = function;
-        obj.upvalues = try vm.allocator.alloc(?*ObjUpValue, function.upvalue_count);
+        // GC can't be triggered by direct call to alloc function (see body)
+        const upvalues = try vm.allocator.alloc(?*ObjUpValue, function.upvalue_count);
 
         // Need to null this out rather than leaving it
         // uninitialized becaue the GC might try to look at it
         // before it gets filled in with values
-        for (obj.upvalues) |*uv| {
+        for (upvalues) |*uv| {
             uv.* = null;
         }
 
+        const obj = try Obj.allocate(vm, Self, .Closure);
+
+        obj.function = function;
+        obj.upvalues = upvalues;
         obj.upvalue_count = function.upvalue_count;
+
+        if (config.LOG_GC) {
+            const display_name = if (function.name) |n| n.chars else "main";
+            std.debug.print("{s}\n", .{display_name});
+        }
 
         return obj;
     }
@@ -302,6 +324,11 @@ pub const ObjUpValue = struct {
         obj.location = slot;
         obj.next = null;
         obj.closed = Value.null_();
+
+        if (config.LOG_GC) {
+            slot.print(std.debug);
+            std.debug.print("\n", .{});
+        }
 
         return obj;
     }

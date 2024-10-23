@@ -1,143 +1,143 @@
-// var breakfast = "beignets"
-// var beverage = "cafe au lait"
-// breakfast = "beignets with " + beverage
-//
-// print breakfast
-//
-// // Scopes
-// var a = 1
-// {
-//     print a    //  1
-//     var a = 3
-//     print a    //  3
-//
-//     {
-//         a = 5
-//     }
-//     print a    //  5
-// }
-// print a        //  1
-//
-//
-// var aa = 0
-// {
-//     aa = 1
-//     var b = 6
-//     aa = b
-// }
-// print aa //  6
-//
-//
-// // Conditionals
-// if true { print "oui" }
-// if true
-// {
-//
-//     print "oiu"}
-//
-// if false { print "oui" } else { print "non" }
-//
-// var if_tests = 3
-// if true { if_tests = 5 } else { if_tests = -8 }
-// print if_tests
-// if false { if_tests = 65 } else { if_tests = -42 }
-// print if_tests
-//
-// var aaa = 0
-// if true {
-//     aaa = 1
-//     var b = 6
-//     aaa = b
-//     aaa = 8
-// }
-// print aaa
-//
-// if true or true { print "oui" }
-// if true or false { print "oui" }
-// if false or true { print "oui" }
-// if false or false { print "non" } else { print "oui" }
-// if false and false { print "non" } else { print "oui" }
-// if true and false { print "non" } else { print "oui" }
-// if false and true { print "non" } else { print "oui" }
-// if true and true { print "oui" } else { print "non" }
-//
-// if true and true or false { print "oui" } else { print "non" }
-// if !!false or true and false or !!true { print "oui" }
-//
-// // While
-// var incr = 0
-// while incr < 5 { incr = incr + 1 }
-// print incr
-//
-// // For
-// for i in 5 { print i }
-//
-//
-// // Functions
-// fn are_we_fn_yet() {
-//     print "yes we are"
-// }
-//
-// print are_we_fn_yet
-//
-// are_we_fn_yet()
-//
-// // Native fnction
-// print clock
-// var start = clock()
-// print start
-// print clock() - start
-//
-// // Fib
-// fn fib(n) {
-//   if n < 2 { return n }
-//   return fib(n - 2) + fib(n - 1)
-// }
-//
-// var start_fib = clock()
-// print fib(35)
-// print clock() - start_fib
+var breakfast = "beignets"
+var beverage = "cafe au lait"
+breakfast = "beignets with " + beverage
+
+print breakfast
+
+// Scopes
+var a = 1
+{
+    print a    //  1
+    var a = 3
+    print a    //  3
+
+    {
+        a = 5
+    }
+    print a    //  5
+}
+print a        //  1
+
+
+var aa = 0
+{
+    aa = 1
+    var b = 6
+    aa = b
+}
+print aa //  6
+
+
+// Conditionals
+if true { print "oui" }
+if true
+{
+
+    print "oiu"}
+
+if false { print "oui" } else { print "non" }
+
+var if_tests = 3
+if true { if_tests = 5 } else { if_tests = -8 }
+print if_tests
+if false { if_tests = 65 } else { if_tests = -42 }
+print if_tests
+
+var aaa = 0
+if true {
+    aaa = 1
+    var b = 6
+    aaa = b
+    aaa = 8
+}
+print aaa
+
+if true or true { print "oui" }
+if true or false { print "oui" }
+if false or true { print "oui" }
+if false or false { print "non" } else { print "oui" }
+if false and false { print "non" } else { print "oui" }
+if true and false { print "non" } else { print "oui" }
+if false and true { print "non" } else { print "oui" }
+if true and true { print "oui" } else { print "non" }
+
+if true and true or false { print "oui" } else { print "non" }
+if !!false or true and false or !!true { print "oui" }
+
+// While
+var incr = 0
+while incr < 5 { incr = incr + 1 }
+print incr
+
+// For
+for i in 5 { print i }
+
+
+// Functions
+fn are_we_fn_yet() {
+    print "yes we are"
+}
+
+print are_we_fn_yet
+
+are_we_fn_yet()
+
+// Native fnction
+print clock
+var start = clock()
+print start
+print clock() - start
+
+// Fib
+fn fib(n) {
+  if n < 2 { return n }
+  return fib(n - 2) + fib(n - 1)
+}
+var start_fib = clock()
+print fib(5)
+print clock() - start_fib
 
 // Closure
-// {
-//     var a = 123
-//     fn print_a() { print a }
-//     print_a()
-// }
+{
+    var a = 123
+    fn print_a() { print a }
+    print_a()
+}
 
-// var x = "global"
-// fn outer() {
-//   var x = "outer"
-//   fn inner() {
-//     print x
-//   }
-//   inner()
-// }
-// outer() // "outer"
-//
-//
-// fn outer() {
-//   var x = "outside"
-//   fn inner() {
-//     print x
-//   }
-//   inner()
-// }
-// outer() // "outside"
-//
-// // Closed up upvalue
-// fn outer() {
-//   var x = "outside"
-//   fn inner() {
-//     print x
-//   }
-//
-//   return inner
-// }
-//
-// var closure = outer()
-// closure()
-//
+var x = "global"
+fn outer() {
+  var x = "outer"
+  fn inner() {
+    print x
+  }
+  inner()
+}
+outer() // "outer"
+
+
+fn outer() {
+  var x = "outside"
+  fn inner() {
+    print x
+  }
+  inner()
+}
+outer() // "outside"
+
+// Closed up upvalue
+fn outer() {
+  var x = "outside"
+  fn inner() {
+    print x
+  }
+
+  return inner
+}
+
+var closure = outer()
+closure() // "outside"
+
+
 var globalSet
 var globalGet
 

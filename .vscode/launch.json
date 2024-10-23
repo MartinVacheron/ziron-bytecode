@@ -27,6 +27,28 @@
         {
             "type": "cppvsdbg",
             "request": "launch",
+            "name": "Debug GC playground",
+            "program": "${workspaceFolder}/zig-out/bin/rizon.exe",
+            "args": [
+                "${workspaceFolder}/playground.rz",
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build stress gc",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "name": "Debug GC full log playground",
+            "program": "${workspaceFolder}/zig-out/bin/rizon.exe",
+            "args": [
+                "${workspaceFolder}/playground.rz",
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build stress gc full log",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
             "name": "Debug test",
             "program": "${workspaceFolder}/zig-out/bin/${fileBasenameNoExtension}-test",
             "args": [],

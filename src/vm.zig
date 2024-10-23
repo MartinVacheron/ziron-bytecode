@@ -6,8 +6,8 @@ const Gc = @import("gc.zig").Gc;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("values.zig").Value;
-const ByteCodeGen = @import("compiler.zig").ByteCodeGen;
 const Compiler = @import("compiler.zig").Compiler;
+const compile = @import("compiler.zig").compile;
 const Obj = @import("obj.zig").Obj;
 const ObjFunction = @import("obj.zig").ObjFunction;
 const ObjIter = @import("obj.zig").ObjIter;
@@ -105,7 +105,7 @@ pub const Vm = struct {
     gc: Gc,
     allocator: Allocator,
     stack: Stack,
-    bytecode_gen: ByteCodeGen,
+    compiler: *Compiler,
     objects: ?*Obj,
     strings: Table,
     globals: Table,
@@ -123,7 +123,7 @@ pub const Vm = struct {
             .gc = Gc.init(allocator),
             .allocator = undefined,
             .stack = Stack.new(),
-            .bytecode_gen = ByteCodeGen.new(),
+            .compiler = undefined,
             .objects = null,
             .strings = undefined,
             .globals = undefined,
@@ -133,7 +133,7 @@ pub const Vm = struct {
     }
 
     pub fn init(self: *Self) Allocator.Error!void {
-        self.gc.link(self, &self.bytecode_gen.compiler);
+        self.gc.link(self);
         self.allocator = self.gc.allocator();
 
         self.stack.init();
@@ -147,6 +147,7 @@ pub const Vm = struct {
         self.strings.deinit();
         self.globals.deinit();
         self.free_objects();
+        self.gc.deinit();
     }
 
     fn free_objects(self: *Self) void {
@@ -159,17 +160,18 @@ pub const Vm = struct {
     }
 
     pub fn interpret(self: *Self, source: []const u8) VmErr!void {
-        const function = self.bytecode_gen.compile(self, source) catch |e| {
+        const function = compile(self, source) catch |e| {
             print("{}\n", .{e});
             return;
         };
-        self.stack.push(Value.obj(function.as_obj()));
 
         const closure = try ObjClosure.create(self, function);
-        _ = self.stack.pop();
         self.stack.push(Value.obj(closure.as_obj()));
 
         try self.call(closure, 0);
+
+        self.gc.active = true;
+
         try self.run();
     }
 
@@ -218,7 +220,9 @@ pub const Vm = struct {
                 },
                 .Closure => {
                     const function = frame.read_constant().as_obj().?.as(ObjFunction);
+                    self.stack.push(Value.obj(function.as_obj()));
                     const closure = try ObjClosure.create(self, function);
+                    _ = self.stack.pop();
                     self.stack.push(Value.obj(closure.as_obj()));
 
                     for (0..closure.upvalue_count) |i| {
@@ -267,11 +271,9 @@ pub const Vm = struct {
                     const jump = frame.read_short();
                     const iter_index = frame.read_byte();
 
-                    // const iter = self.stack.values[iter_index].as_obj().?.as(ObjIter);
                     const iter = frame.slots[iter_index].as_obj().?.as(ObjIter);
 
                     if (iter.next()) |i| {
-                        // self.stack.values[iter_index - 1].Int = i;
                         frame.slots[iter_index - 1].Int = i;
                     } else {
                         frame.ip += jump;
@@ -490,7 +492,8 @@ pub const Vm = struct {
         const v1 = self.stack.peek(1);
 
         if (v1 == .Obj and v2 == .Obj) {
-            return try self.concatenate(v1, v2);
+            // return try self.concatenate(v1, v2);
+            return try self.concatenate();
         }
 
         _ = self.stack.pop();
@@ -533,9 +536,13 @@ pub const Vm = struct {
         unreachable;
     }
 
-    fn concatenate(self: *Self, str1: Value, str2: Value) Allocator.Error!Value {
-        const obj1 = str1.as_obj().?.as(ObjString);
-        const obj2 = str2.as_obj().?.as(ObjString);
+    // fn concatenate(self: *Self, str1: Value, str2: Value) Allocator.Error!Value {
+    fn concatenate(self: *Self) Allocator.Error!Value {
+        // const obj1 = str1.as_obj().?.as(ObjString);
+        // const obj2 = str2.as_obj().?.as(ObjString);
+        const obj1 = self.stack.pop().as_obj().?.as(ObjString);
+        const obj2 = self.stack.pop().as_obj().?.as(ObjString);
+        // const obj2 = str2.as_obj().?.as(ObjString);
 
         const res = try self.allocator.alloc(u8, obj1.chars.len + obj2.chars.len);
         @memcpy(res[0..obj1.chars.len], obj1.chars);

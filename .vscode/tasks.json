@@ -12,6 +12,39 @@
             }
         },
         {
+            "label": "build stress gc",
+            "type": "shell",
+            "command": "zig",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "args": [
+                "build",
+                "-Dlog_gc=true",
+                "-Dstress_gc=true",
+            ]
+        },
+        {
+            "label": "build stress gc full log",
+            "type": "shell",
+            "command": "zig",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "args": [
+                "build",
+                "-Dlog_gc=true",
+                "-Dstress_gc=true",
+                "-Dprint_stack=true",
+                "-Dprint_code=true",
+                "-Dtracing=true",
+            ]
+        },
+        {
             "label": "test",
             "type": "shell",
             "command": "zig",
