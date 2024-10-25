@@ -192,7 +192,7 @@ pub const Compiler = struct {
         .BangEqual = ParseRule{ .infix = Self.binary, .precedence = .Equality },
         .Colon = ParseRule{},
         .Comma = ParseRule{},
-        .Dot = ParseRule{},
+        .Dot = ParseRule{ .infix = Self.dot, .precedence = .Call },
         .Else = ParseRule{},
         .Eof = ParseRule{},
         .Equal = ParseRule{},
@@ -497,6 +497,8 @@ pub const Compiler = struct {
             try self.var_declaration();
         } else if (self.parser.match(.Fn)) {
             try self.fn_declaration();
+        } else if (self.parser.match(.Struct)) {
+            try self.struct_declaration();
         } else {
             try self.statement();
         }
@@ -558,6 +560,19 @@ pub const Compiler = struct {
             try self.emit_byte_u8(if (compiler.upvalues[i].is_local) 1 else 0);
             try self.emit_byte_u8(compiler.upvalues[i].index);
         }
+    }
+
+    fn struct_declaration(self: *Self) Allocator.Error!void {
+        self.parser.consume(.Identifier, "expect structure name");
+        const name_id = try self.identifier_constant(&self.parser.previous);
+        self.declare_variable();
+
+        try self.emit_bytes_u8(.Struct, name_id);
+        // Define before body, the we can refer to the class own method's body
+        try self.define_variable(name_id);
+
+        self.parser.consume(.LeftBrace, "expect '{' before structure body");
+        self.parser.consume(.RightBrace, "expect '}' after structure body");
     }
 
     fn statement(self: *Self) Allocator.Error!void {
@@ -767,6 +782,18 @@ pub const Compiler = struct {
     fn call(self: *Self, _: bool) Allocator.Error!void {
         const args_count = try self.argument_list();
         try self.emit_bytes_u8(.Call, args_count);
+    }
+
+    fn dot(self: *Self, can_assign: bool) Allocator.Error!void {
+        self.parser.consume(.Identifier, "expect property name after '.'");
+        const name_id = try self.identifier_constant(&self.parser.previous);
+
+        if (can_assign and self.parser.match(.Equal)) {
+            try self.expression();
+            try self.emit_bytes_u8(.SetProperty, name_id);
+        } else {
+            try self.emit_bytes_u8(.GetProperty, name_id);
+        }
     }
 
     fn unary(self: *Self, _: bool) Allocator.Error!void {

@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const config = @import("config");
 const Vm = @import("vm.zig").Vm;
+const Table = @import("table.zig").Table;
 const Chunk = @import("chunk.zig").Chunk;
 const Value = @import("values.zig").Value;
 
@@ -14,9 +15,11 @@ pub const Obj = struct {
     const ObjKind = enum {
         Closure,
         Fn,
+        Instance,
         Iter,
         NativeFn,
         String,
+        Struct,
         UpValue,
     };
 
@@ -40,12 +43,17 @@ pub const Obj = struct {
         return ptr;
     }
 
+    // NOTE: lots of repetition...
     pub fn destroy(self: *Obj, vm: *Vm) void {
         switch (self.kind) {
             .Closure => self.as(ObjClosure).deinit(vm.allocator),
             .Fn => {
                 const function = self.as(ObjFunction);
                 function.deinit(vm.allocator);
+            },
+            .Instance => {
+                const instance = self.as(ObjInstance);
+                instance.deinit(vm.allocator);
             },
             .Iter => {
                 const iter = self.as(ObjIter);
@@ -58,6 +66,10 @@ pub const Obj = struct {
             .String => {
                 const string = self.as(ObjString);
                 string.deinit(vm.allocator);
+            },
+            .Struct => {
+                const structure = self.as(ObjStruct);
+                structure.deinit(vm.allocator);
             },
             .UpValue => {
                 const upval = self.as(ObjUpValue);
@@ -76,13 +88,15 @@ pub const Obj = struct {
         switch (self.kind) {
             .Closure => self.as(ObjClosure).function.print(writer),
             .Fn => self.as(ObjFunction).print(writer),
+            .Instance => writer.print("<instance of {s}>", .{self.as(ObjInstance).parent.name.chars}),
             .Iter => {
                 const iter = self.as(ObjIter);
                 writer.print("iter: {} -> {}", .{ iter.current, iter.end });
             },
             .NativeFn => writer.print("<native fn>", .{}),
             .String => writer.print("\"{s}\"", .{self.as(ObjString).chars}),
-            .UpValue => writer.print("puvalue", .{}),
+            .Struct => writer.print("<struct {s}>", .{self.as(ObjStruct).name.chars}),
+            .UpValue => writer.print("upvalue", .{}),
         }
     }
 };
@@ -339,6 +353,57 @@ pub const ObjUpValue = struct {
 
     // It dosen't own the variable
     pub fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.destroy(self);
+    }
+};
+
+pub const ObjStruct = struct {
+    obj: Obj,
+    name: *ObjString,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, name: *ObjString) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, Self, .Struct);
+        obj.name = name;
+
+        if (config.LOG_GC) std.debug.print("<struct {s}>\n", .{name.chars});
+
+        return obj;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
+    }
+
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.destroy(self);
+    }
+};
+
+pub const ObjInstance = struct {
+    obj: Obj,
+    parent: *ObjStruct,
+    fields: Table,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, parent: *ObjStruct) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, Self, .Instance);
+        obj.parent = parent;
+        obj.fields = Table.init(vm.allocator);
+
+        if (config.LOG_GC) std.debug.print("<instance of {s}>\n", .{parent.name.chars});
+
+        return obj;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
+    }
+
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        self.fields.deinit();
         allocator.destroy(self);
     }
 };

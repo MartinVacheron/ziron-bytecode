@@ -7,6 +7,8 @@ const Value = @import("values.zig").Value;
 const Obj = @import("obj.zig").Obj;
 const ObjClosure = @import("obj.zig").ObjClosure;
 const ObjFunction = @import("obj.zig").ObjFunction;
+const ObjStruct = @import("obj.zig").ObjStruct;
+const ObjInstance = @import("obj.zig").ObjInstance;
 const ObjUpValue = @import("obj.zig").ObjUpValue;
 const Table = @import("table.zig").Table;
 const Compiler = @import("compiler.zig").Compiler;
@@ -112,6 +114,12 @@ pub const Gc = struct {
                 }
                 try self.mark_array(&function.chunk.constants);
             },
+            .Instance => {
+                const instance = obj.as(ObjInstance);
+                try self.mark_object(instance.parent.name.as_obj());
+                try self.mark_table(&instance.fields);
+            },
+            .Struct => try self.mark_object(obj.as(ObjStruct).name.as_obj()),
             .UpValue => try self.mark_value(&obj.as(ObjUpValue).closed),
             .NativeFn, .String, .Iter => {},
         }

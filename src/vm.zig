@@ -14,6 +14,8 @@ const ObjIter = @import("obj.zig").ObjIter;
 const ObjString = @import("obj.zig").ObjString;
 const ObjNativeFn = @import("obj.zig").ObjNativeFn;
 const ObjClosure = @import("obj.zig").ObjClosure;
+const ObjStruct = @import("obj.zig").ObjStruct;
+const ObjInstance = @import("obj.zig").ObjInstance;
 const ObjUpValue = @import("obj.zig").ObjUpValue;
 const NativeFn = @import("obj.zig").NativeFn;
 const Table = @import("table.zig").Table;
@@ -296,6 +298,30 @@ pub const Vm = struct {
                     const index = frame.read_byte();
                     self.stack.push(frame.slots[index]);
                 },
+                .GetProperty => {
+                    const instance = self.stack.peek(0).as_obj().?.as(ObjInstance);
+                    const property_name = frame.read_string();
+
+                    if (self.stack.peek(0).as_obj()) |obj| {
+                        if (obj.kind != .Instance) {
+                            self.runtime_err("only instances have properties");
+                            return error.RuntimeErr;
+                        }
+
+                        if (instance.fields.get(property_name)) |value| {
+                            _ = self.stack.pop(); // Instance
+                            self.stack.push(value);
+                        } else {
+                            var buf: [128]u8 = undefined;
+                            _ = try std.fmt.bufPrint(&buf, "undeclared property: {s}\n", .{property_name.chars});
+                            self.runtime_err(&buf);
+                            return error.RuntimeErr;
+                        }
+                    } else {
+                        self.runtime_err("only instances have properties");
+                        return error.RuntimeErr;
+                    }
+                },
                 .GetUpvalue => {
                     const slot = frame.read_byte();
                     // NOTE: do we really need nullable?
@@ -381,11 +407,37 @@ pub const Vm = struct {
                     const index = frame.read_byte();
                     frame.slots[index] = self.stack.peek(0);
                 },
+                .SetProperty => {
+                    if (self.stack.peek(1).as_obj()) |obj| {
+                        if (obj.kind != .Instance) {
+                            self.runtime_err("only instances have fields");
+                            return error.RuntimeErr;
+                        }
+
+                        const instance = obj.as(ObjInstance);
+                        // We can add new fields like that, we don't check if it exists
+                        _ = try instance.fields.set(frame.read_string(), self.stack.peek(0));
+
+                        // Here, we let the assigned value on top of the stack to chain
+                        // assignemnts
+                        const value = self.stack.pop();
+                        _ = self.stack.pop();
+                        self.stack.push(value);
+                    } else {
+                        self.runtime_err("only instances have fields");
+                        return error.RuntimeErr;
+                    }
+                },
                 .SetUpvalue => {
                     const index = frame.read_byte();
                     frame.closure.upvalues[index].?.location.* = self.stack.peek(0);
                 },
-                .Subtract => self.stack.push(try self.binop('-')),
+                .Struct => {
+                    const structure = try ObjStruct.create(self, frame.read_string());
+                    self.stack.push(Value.obj(structure.as_obj()));
+                },
+                .Subtract,
+                => self.stack.push(try self.binop('-')),
                 .True => self.stack.push(Value.bool_(true)),
             }
         }
@@ -402,6 +454,14 @@ pub const Vm = struct {
                     const result = function(args);
                     self.stack.top -= arg_count + 1;
                     self.stack.push(result);
+                    return;
+                },
+                .Struct => {
+                    const structure = obj.as(ObjStruct);
+                    const instance = try ObjInstance.create(self, structure);
+                    // Replaces the structure by the instance before args for constructor
+                    const val = &(self.stack.top - arg_count - 1)[0];
+                    val.* = Value.obj(instance.as_obj());
                     return;
                 },
                 else => {},

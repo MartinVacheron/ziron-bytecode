@@ -71,6 +71,7 @@ pub const Disassembler = struct {
             .ForIter => self.for_instruction("OP_FOR_ITER", 1, offset),
             .GetGlobal => self.constant_instruction("OP_GET_GLOBAL", offset),
             .GetLocal => self.byte_instruction("OP_GET_LOCAL", offset),
+            .GetProperty => self.constant_instruction("OP_GET_PROPERTY", offset),
             .GetUpvalue => self.byte_instruction("OP_GET_UPVALUE", offset),
             .Greater => simple_instruction("OP_GREATER", offset),
             .Jump => self.jump_instruction("OP_JUMP", 1, offset),
@@ -86,7 +87,9 @@ pub const Disassembler = struct {
             .Return => simple_instruction("OP_RETURN", offset),
             .SetGlobal => self.constant_instruction("OP_SET_GLOBAL", offset),
             .SetLocal => self.byte_instruction("OP_SET_LOCAL", offset),
+            .SetProperty => self.constant_instruction("OP_SET_PROPERTY", offset),
             .SetUpvalue => self.byte_instruction("OP_SET_UPVALUE", offset),
+            .Struct => self.constant_instruction("OP_STRUCT", offset),
             .Subtract => simple_instruction("OP_SUBTRACT", offset),
             .True => simple_instruction("OP_TRUE", offset),
         };

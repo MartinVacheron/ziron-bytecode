@@ -17,6 +17,7 @@ pub const OpCode = enum(u8) {
     ForIter,
     GetGlobal,
     GetLocal,
+    GetProperty,
     GetUpvalue,
     Greater,
     Jump,
@@ -32,7 +33,9 @@ pub const OpCode = enum(u8) {
     Return,
     SetGlobal,
     SetLocal,
+    SetProperty,
     SetUpvalue,
+    Struct,
     Subtract,
     True,
 };
