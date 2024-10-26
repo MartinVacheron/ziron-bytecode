@@ -1,0 +1,7 @@
+struct Foo {
+  fn Foo() {
+    self = "value" // error: invalid assignment target
+  }
+}
+
+Foo()

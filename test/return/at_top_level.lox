@@ -1,0 +1,1 @@
+return "wat" // error: can't return from top-level code

@@ -1,0 +1,9 @@
+{
+  struct Foo {
+    fn returnSelf() {
+      return Foo
+    }
+  }
+
+  print Foo().returnSelf() // expect: <structure Foo>
+}

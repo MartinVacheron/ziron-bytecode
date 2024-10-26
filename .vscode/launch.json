@@ -19,7 +19,7 @@
             "name": "Debug playground",
             "program": "${workspaceFolder}/zig-out/bin/rizon.exe",
             "args": [
-                "${workspaceFolder}/playground.rz",
+                "${workspaceFolder}/test.rz",
             ],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "build",
@@ -45,6 +45,17 @@
             ],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "build stress gc full log",
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "name": "Debug full log playground",
+            "program": "${workspaceFolder}/zig-out/bin/rizon.exe",
+            "args": [
+                "${workspaceFolder}/playground.rz",
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build full log",
         },
         {
             "type": "cppvsdbg",

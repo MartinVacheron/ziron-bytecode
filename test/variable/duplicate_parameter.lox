@@ -1,0 +1,4 @@
+fn foo(arg,
+        arg) { // error: already declared variable in this scope
+  "body"
+}

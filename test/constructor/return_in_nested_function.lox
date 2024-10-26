@@ -1,0 +1,10 @@
+struct Foo {
+  fn init() {
+    fn init() {
+      return "bar"
+    }
+    print init() // expect: "bar"
+  }
+}
+
+print Foo() // expect: <instance of Foo>

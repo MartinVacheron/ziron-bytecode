@@ -1,0 +1,10 @@
+var start = clock()
+
+var result = 0
+for i in 10000000 {
+    result = result + 11
+    result = result * 10
+    result = result - (result / 100) * 99
+}
+
+print clock() - start

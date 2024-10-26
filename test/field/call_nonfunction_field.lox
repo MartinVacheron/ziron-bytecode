@@ -1,0 +1,6 @@
+struct Foo {}
+
+var foo = Foo()
+foo.bar = "not fn"
+
+foo.bar() // error: can only call functions and structures

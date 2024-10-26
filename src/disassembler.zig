@@ -39,14 +39,14 @@ pub const Disassembler = struct {
             .Call => self.byte_instruction("OP_CALL", offset),
             .CloseUpValue => simple_instruction("OP_CLOSE_UPVALUE", offset),
             .Closure => {
-                print("{s:<16} ", .{"OP_CLOSURE"});
-
                 var local_offset = offset + 1;
                 const constant = self.chunk.code.items[local_offset];
                 local_offset += 1;
 
+                print("{s:<16} index: {:<4}", .{ "OP_CLOSURE", constant });
+
                 const obj = self.chunk.constants.items[constant].as_obj().?;
-                obj.print(std.debug);
+                obj.log();
                 print("\n", .{});
 
                 const obj_fn = obj.as(ObjFunction);
@@ -74,10 +74,12 @@ pub const Disassembler = struct {
             .GetProperty => self.constant_instruction("OP_GET_PROPERTY", offset),
             .GetUpvalue => self.byte_instruction("OP_GET_UPVALUE", offset),
             .Greater => simple_instruction("OP_GREATER", offset),
+            .Invoke => self.invoke_instruction("OP_INVOKE", offset),
             .Jump => self.jump_instruction("OP_JUMP", 1, offset),
             .JumpIfFalse => self.jump_instruction("OP_JUMP_IF_FALSE", 1, offset),
             .Less => simple_instruction("OP_LESS", offset),
             .Loop => self.jump_instruction("OP_LOOP", -1, offset),
+            .Method => self.constant_instruction("OP_METHOD", offset),
             .Multiply => simple_instruction("OP_MULTIPLY", offset),
             .Negate => simple_instruction("OP_NEGATE", offset),
             .Not => simple_instruction("OP_NOT", offset),
@@ -104,7 +106,7 @@ pub const Disassembler = struct {
         const constant = self.chunk.code.items[offset + 1];
         const value = self.chunk.constants.items[constant];
         print("{s:<16} index: {:<4} value: ", .{ name, constant });
-        value.print(std.debug);
+        value.log();
         print("\n", .{});
         return offset + 2;
     }
@@ -137,5 +139,17 @@ pub const Disassembler = struct {
         print("{s:<16} iter index: {}, {:<4} -> {}\n", .{ name, iter_index, offset, target });
 
         return offset + 4;
+    }
+
+    fn invoke_instruction(self: *const Self, name: []const u8, offset: usize) usize {
+        const name_id = self.chunk.code.items[offset + 1];
+        const method_name = self.chunk.constants.items[name_id];
+        const arg_count = self.chunk.code.items[offset + 2];
+
+        print("{s:<16} index: {}, value: ", .{ name, name_id });
+        method_name.log();
+        print(", {} args\n", .{arg_count});
+
+        return offset - 3;
     }
 };

@@ -1,0 +1,3 @@
+fn foo(a) {
+  var a // error: already declared variable in this scope
+}

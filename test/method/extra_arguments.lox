@@ -1,0 +1,8 @@
+struct Foo {
+  fn method(a, b) {
+    print a
+    print b
+  }
+}
+
+Foo().method(1, 2, 3, 4) // error: expected 2 arguments but got 4

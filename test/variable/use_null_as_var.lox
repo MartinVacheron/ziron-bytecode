@@ -1,0 +1,2 @@
+// error: expect variable name
+var null = "value"

@@ -45,6 +45,22 @@
             ]
         },
         {
+            "label": "build full log",
+            "type": "shell",
+            "command": "zig",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "args": [
+                "build",
+                "-Dprint_stack=true",
+                "-Dprint_code=true",
+                "-Dtracing=true",
+            ]
+        },
+        {
             "label": "test",
             "type": "shell",
             "command": "zig",

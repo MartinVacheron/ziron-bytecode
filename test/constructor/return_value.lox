@@ -1,0 +1,5 @@
+struct Foo {
+  fn init() {
+    return "result" // error: can't return a value from a constructor
+  }
+}

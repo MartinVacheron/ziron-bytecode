@@ -1,0 +1,2 @@
+struct Foo {}
+Foo.bar // error: only instances have field

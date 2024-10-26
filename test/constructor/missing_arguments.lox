@@ -1,0 +1,5 @@
+struct Foo {
+  fn init(a, b) {}
+}
+
+var foo = Foo(1) // error: expected 2 arguments but got 1

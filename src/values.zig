@@ -77,13 +77,23 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn print(self: *const Value, writer: anytype) void {
-        switch (self.*) {
+    pub fn print(self: *const Value, writer: anytype) std.fs.File.WriteError!void {
+        try switch (self.*) {
             .Int => |v| writer.print("{}", .{v}),
             .Float => |v| writer.print("{d}", .{v}),
             .Bool => |v| writer.print("{}", .{v}),
             .Null => writer.print("null", .{}),
             .Obj => |v| v.print(writer),
+        };
+    }
+
+    pub fn log(self: *const Value) void {
+        switch (self.*) {
+            .Int => |v| std.debug.print("{}", .{v}),
+            .Float => |v| std.debug.print("{d}", .{v}),
+            .Bool => |v| std.debug.print("{}", .{v}),
+            .Null => std.debug.print("null", .{}),
+            .Obj => |v| v.log(),
         }
     }
 };

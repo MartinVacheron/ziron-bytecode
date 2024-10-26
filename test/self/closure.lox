@@ -1,0 +1,13 @@
+struct Foo {
+  fn getClosure() {
+    fn closure() {
+      return self.toString()
+    }
+    return closure
+  }
+
+  fn toString() { return "Foo" }
+}
+
+var closure = Foo().getClosure()
+print closure() // expect: "Foo"

@@ -1,0 +1,19 @@
+struct Foo {
+  fn getClosure() {
+    fn f() {
+      fn g() {
+        fn h() {
+          return self.toString()
+        }
+        return h
+      }
+      return g
+    }
+    return f
+  }
+
+  fn toString() { return "Foo" }
+}
+
+var closure = Foo().getClosure()
+print closure()()() // expect: "Foo"

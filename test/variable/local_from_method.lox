@@ -1,0 +1,9 @@
+var foo = "variable"
+
+struct Foo {
+  fn method() {
+    print foo
+  }
+}
+
+Foo().method() // expect: "variable"

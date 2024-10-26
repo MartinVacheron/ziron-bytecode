@@ -1,0 +1,1 @@
+-"s" // error:  can't negate type other than int and float

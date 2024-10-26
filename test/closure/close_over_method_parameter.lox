@@ -1,0 +1,13 @@
+var f
+
+struct Foo {
+  fn method(param) {
+    fn f_() {
+      print param
+    }
+    f = f_
+  }
+}
+
+Foo().method("param")
+f() // expect: "param"

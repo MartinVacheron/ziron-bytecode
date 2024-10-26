@@ -1,0 +1,33 @@
+struct Toggle {
+  fn init(startState) {
+    self.state = startState
+  }
+
+  fn value() { return self.state }
+
+  fn activate() {
+    self.state = !self.state
+    return self
+  }
+}
+
+
+var start = clock()
+var val = true
+var toggle = Toggle(val)
+
+for i in 100000 {
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+  val = toggle.activate().value()
+}
+
+// print toggle.value()
+print clock() - start

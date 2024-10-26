@@ -148,6 +148,8 @@ const Parser = struct {
 
 const FnKind = enum {
     Fn,
+    Initializer,
+    Method,
     Script,
 };
 
@@ -173,6 +175,7 @@ pub const Compiler = struct {
     local_count: u8,
     scope_depth: usize,
     upvalues: [std.math.maxInt(u8) + 1]UpValue,
+    in_struct: bool,
 
     const Self = @This();
 
@@ -225,7 +228,7 @@ pub const Compiler = struct {
         .Star = ParseRule{ .infix = Self.binary, .precedence = .Factor },
         .String = ParseRule{ .prefix = Self.string },
         .Struct = ParseRule{},
-        .Self = ParseRule{},
+        .Self = ParseRule{ .prefix = Self.self_ },
         .True = ParseRule{ .prefix = Self.literal },
         .Var = ParseRule{},
         .While = ParseRule{},
@@ -242,6 +245,7 @@ pub const Compiler = struct {
             .local_count = 0,
             .scope_depth = 0,
             .upvalues = [_]UpValue{.{ .index = 0, .is_local = false }} ** 256,
+            .in_struct = false,
         };
     }
 
@@ -258,11 +262,18 @@ pub const Compiler = struct {
 
         self.function = try ObjFunction.create(vm, name);
 
+        if (kind == .Initializer or kind == .Method) {
+            self.in_struct = true;
+        } else {
+            self.in_struct = false;
+        }
+
         // Because the first value in the stack will be the function object
         // itself. We keep the first slot empty to be aligned to runtime stack
         const first_local = &self.locals[0];
         // Depth and is_captured already init in array declaration
-        first_local.name = "";
+        first_local.name = if (kind != .Fn) "self" else "";
+
         self.local_count += 1;
     }
 
@@ -401,17 +412,17 @@ pub const Compiler = struct {
             const local_id = enclosing.resolve_local(token);
 
             if (local_id != -1) {
+                enclosing.locals[@intCast(local_id)].is_captured = true;
                 return self.add_upvalue(@intCast(local_id), true);
             }
 
+            // We are forced to inform the enclosing like this because when
+            // we'll return to the enclosing to finish its compilation,
+            // the current compiler will be ended, we have no way anymore
+            // to know if a local was captured. We do it now.
             const upvalue = enclosing.resolve_upvalue(token);
 
             if (upvalue != -1) {
-                // We are forced to inform the enclosing like this because when
-                // we'll return to the enclosing to finish its compilation,
-                // the current compiler will be ended, we have no way anymore
-                // to know if a local was captured. We do it now.
-                enclosing.locals[@intCast(upvalue)].is_captured = true;
                 return self.add_upvalue(@intCast(upvalue), false);
             }
         }
@@ -564,6 +575,7 @@ pub const Compiler = struct {
 
     fn struct_declaration(self: *Self) Allocator.Error!void {
         self.parser.consume(.Identifier, "expect structure name");
+        const struct_name = &self.parser.previous;
         const name_id = try self.identifier_constant(&self.parser.previous);
         self.declare_variable();
 
@@ -571,8 +583,40 @@ pub const Compiler = struct {
         // Define before body, the we can refer to the class own method's body
         try self.define_variable(name_id);
 
-        self.parser.consume(.LeftBrace, "expect '{' before structure body");
+        // Allow to put the structure back on top of stack. It could be a local
+        // or a global, the function handles that
+        try self.named_variable(struct_name, false);
+
+        self.parser.consume_skip(.LeftBrace, "expect '{' before structure body");
+
+        if (self.parser.check(.Fn)) {
+            while (!self.parser.check(.RightBrace) and !self.parser.check(.Eof)) {
+                self.parser.consume(.Fn, "expect 'fn' keyword to declare methods");
+                try self.method();
+                self.parser.skip_new_lines();
+            }
+        }
+
         self.parser.consume(.RightBrace, "expect '}' after structure body");
+
+        // We pop the structure that was put by the `named variable` method
+        try self.emit_byte(.Pop);
+    }
+
+    fn method(self: *Self) Allocator.Error!void {
+        self.parser.consume(.Identifier, "expect method name");
+        const method_id = try self.identifier_constant(&self.parser.previous);
+
+        var fn_kind: FnKind = .Method;
+
+        if (std.mem.eql(u8, self.parser.previous.lexeme, "init")) {
+            fn_kind = .Initializer;
+        }
+
+        // Leaves the closure on top of the stack at runtime
+        try self.parse_function(fn_kind);
+
+        try self.emit_bytes_u8(.Method, method_id);
     }
 
     fn statement(self: *Self) Allocator.Error!void {
@@ -700,6 +744,10 @@ pub const Compiler = struct {
         if (self.parser.match(.NewLine)) {
             try self.emit_return();
         } else {
+            if (self.kind == .Initializer) {
+                self.parser.err("can't return a value from an initializer");
+            }
+
             try self.expression();
 
             // For the inline syntaxe: if true { return 0 }
@@ -791,6 +839,10 @@ pub const Compiler = struct {
         if (can_assign and self.parser.match(.Equal)) {
             try self.expression();
             try self.emit_bytes_u8(.SetProperty, name_id);
+        } else if (self.parser.match(.LeftParen)) {
+            const arg_count = try self.argument_list();
+            try self.emit_bytes_u8(.Invoke, name_id);
+            try self.emit_byte_u8(arg_count);
         } else {
             try self.emit_bytes_u8(.GetProperty, name_id);
         }
@@ -839,6 +891,16 @@ pub const Compiler = struct {
 
     fn variable(self: *Self, can_assign: bool) Allocator.Error!void {
         try self.named_variable(&self.parser.previous, can_assign);
+    }
+
+    // At this point, 'self' has just been parsed
+    // Calls variable that handles the local machinery for us
+    fn self_(self: *Self, _: bool) Allocator.Error!void {
+        if (!self.in_struct) {
+            self.parser.err("can't use 'self' outside of structure");
+            return;
+        }
+        try self.variable(false);
     }
 
     /// Creates a local or global variable and a Set/Get OpCode
@@ -933,6 +995,8 @@ pub const Compiler = struct {
     }
 
     fn end_compiler(self: *Self) Allocator.Error!*ObjFunction {
+        try self.emit_return();
+
         if (config.PRINT_CODE) {
             if (!self.parser.had_error) {
                 const Disassembler = @import("disassembler.zig").Disassembler;
@@ -950,7 +1014,6 @@ pub const Compiler = struct {
             }
         }
 
-        try self.emit_return();
         return self.function;
     }
 
@@ -958,7 +1021,13 @@ pub const Compiler = struct {
     /// function body. Pushes a null on top of the stack. For real
     /// returns, there is a return_statement handler
     fn emit_return(self: *Self) Allocator.Error!void {
-        try self.emit_byte(.Null);
+        // If we are in 'init' method, we return self, which is at slot 0
+        if (self.kind == .Initializer) {
+            try self.emit_bytes_u8(.GetLocal, 0);
+        } else {
+            try self.emit_byte(.Null);
+        }
+
         try self.emit_byte(.Return);
     }
 

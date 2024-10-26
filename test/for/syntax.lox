@@ -1,0 +1,7 @@
+// Block body.
+for a in 3 {
+  print a
+}
+// expect: 0
+// expect: 1
+// expect: 2

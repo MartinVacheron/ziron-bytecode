@@ -1,0 +1,1 @@
+self // error: can't use 'self' outside of a structure

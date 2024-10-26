@@ -10,6 +10,7 @@ const ObjFunction = @import("obj.zig").ObjFunction;
 const ObjStruct = @import("obj.zig").ObjStruct;
 const ObjInstance = @import("obj.zig").ObjInstance;
 const ObjUpValue = @import("obj.zig").ObjUpValue;
+const ObjBoundMethod = @import("obj.zig").ObjBoundMethod;
 const Table = @import("table.zig").Table;
 const Compiler = @import("compiler.zig").Compiler;
 
@@ -65,9 +66,14 @@ pub const Gc = struct {
     }
 
     fn mark_roots(self: *Self) Allocator.Error!void {
-        for (&self.vm.stack.values) |*value| {
-            try self.mark_value(value);
+        var value = self.vm.stack.values[0..].ptr;
+        while (value != self.vm.stack.top) : (value += 1) {
+            try self.mark_value(&value[0]);
         }
+
+        // for (&self.vm.stack.values) |*value| {
+        //     try self.mark_value(value);
+        // }
 
         try self.mark_table(&self.vm.globals);
 
@@ -79,6 +85,8 @@ pub const Gc = struct {
         while (current_upval) |open_upval| : (current_upval = open_upval.next) {
             try self.mark_object(open_upval.as_obj());
         }
+
+        try self.mark_object(self.vm.init_string.as_obj());
     }
 
     fn trace_reference(self: *Self) Allocator.Error!void {
@@ -91,11 +99,16 @@ pub const Gc = struct {
     fn blacken_object(self: *Self, obj: *Obj) Allocator.Error!void {
         if (config.LOG_GC) {
             print("{*} blacken ", .{obj});
-            obj.print(std.debug);
+            obj.log();
             print("\n", .{});
         }
 
         switch (obj.kind) {
+            .BoundMethod => {
+                const bound = obj.as(ObjBoundMethod);
+                try self.mark_value(&bound.receiver);
+                try self.mark_object(bound.method.as_obj());
+            },
             .Closure => {
                 const closure = obj.as(ObjClosure);
                 try self.mark_object(closure.function.as_obj());
@@ -119,7 +132,11 @@ pub const Gc = struct {
                 try self.mark_object(instance.parent.name.as_obj());
                 try self.mark_table(&instance.fields);
             },
-            .Struct => try self.mark_object(obj.as(ObjStruct).name.as_obj()),
+            .Struct => {
+                const structure = obj.as(ObjStruct);
+                try self.mark_object(structure.name.as_obj());
+                try self.mark_table(&structure.methods);
+            },
             .UpValue => try self.mark_value(&obj.as(ObjUpValue).closed),
             .NativeFn, .String, .Iter => {},
         }
@@ -175,7 +192,8 @@ pub const Gc = struct {
 
             if (config.LOG_GC) {
                 print("{*} mark ", .{o});
-                o.print(std.debug);
+                if (o.kind == .Closure) print("closure ", .{});
+                o.log();
                 print("\n", .{});
             }
 

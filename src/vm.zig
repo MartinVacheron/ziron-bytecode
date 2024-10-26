@@ -17,6 +17,7 @@ const ObjClosure = @import("obj.zig").ObjClosure;
 const ObjStruct = @import("obj.zig").ObjStruct;
 const ObjInstance = @import("obj.zig").ObjInstance;
 const ObjUpValue = @import("obj.zig").ObjUpValue;
+const ObjBoundMethod = @import("obj.zig").ObjBoundMethod;
 const NativeFn = @import("obj.zig").NativeFn;
 const Table = @import("table.zig").Table;
 
@@ -113,12 +114,14 @@ pub const Vm = struct {
     globals: Table,
     frame_stack: FrameStack,
     open_upvalues: ?*ObjUpValue,
+    stdout: std.fs.File.Writer,
+    init_string: *ObjString,
 
     const Self = @This();
 
     const VmErr = error{
         RuntimeErr,
-    } || Compiler.CompileErr || std.fmt.BufPrintError;
+    } || Compiler.CompileErr || std.fmt.BufPrintError || std.posix.WriteError;
 
     pub fn new(allocator: Allocator) Self {
         return .{
@@ -131,6 +134,8 @@ pub const Vm = struct {
             .globals = undefined,
             .frame_stack = FrameStack.new(),
             .open_upvalues = null,
+            .stdout = std.io.getStdOut().writer(),
+            .init_string = undefined,
         };
     }
 
@@ -141,6 +146,7 @@ pub const Vm = struct {
         self.stack.init();
         self.strings = Table.init(self.gc.allocator());
         self.globals = Table.init(self.gc.allocator());
+        self.init_string = try ObjString.copy(self, "init");
 
         try self.define_native("clock", clock_native);
     }
@@ -185,7 +191,7 @@ pub const Vm = struct {
                 var value = self.stack.values[0..].ptr;
                 while (value != self.stack.top) : (value += 1) {
                     print("[", .{});
-                    value[0].print(std.debug);
+                    value[0].log();
                     print("] ", .{});
                 }
                 print("\n", .{});
@@ -260,7 +266,9 @@ pub const Vm = struct {
                 .DefineGlobal => {
                     const name = frame.read_string();
                     // NOTE: we don't check if field exists already, we can redefine same global
-                    _ = try self.globals.set(name, self.stack.pop());
+                    // We peek() for GC
+                    _ = try self.globals.set(name, self.stack.peek(0));
+                    _ = self.stack.pop();
                 },
                 .Divide => self.stack.push(try self.binop('/')),
                 .Equal => {
@@ -287,8 +295,8 @@ pub const Vm = struct {
                     const name = frame.read_string();
                     const value = self.globals.get(name) orelse {
                         var buf: [250]u8 = undefined;
-                        _ = try std.fmt.bufPrint(&buf, "undeclared variable: {s}\n", .{name.chars});
-                        self.runtime_err(&buf);
+                        const written = try std.fmt.bufPrint(&buf, "undeclared variable '{s}'\n", .{name.chars});
+                        self.runtime_err(written);
                         return error.RuntimeErr;
                     };
 
@@ -300,7 +308,7 @@ pub const Vm = struct {
                 },
                 .GetProperty => {
                     const instance = self.stack.peek(0).as_obj().?.as(ObjInstance);
-                    const property_name = frame.read_string();
+                    const name = frame.read_string();
 
                     if (self.stack.peek(0).as_obj()) |obj| {
                         if (obj.kind != .Instance) {
@@ -308,13 +316,15 @@ pub const Vm = struct {
                             return error.RuntimeErr;
                         }
 
-                        if (instance.fields.get(property_name)) |value| {
+                        if (instance.fields.get(name)) |value| {
                             _ = self.stack.pop(); // Instance
                             self.stack.push(value);
+                        } else if (instance.parent.methods.get(name)) |method| {
+                            try self.bind_method(method.as_obj().?.as(ObjClosure));
                         } else {
                             var buf: [128]u8 = undefined;
-                            _ = try std.fmt.bufPrint(&buf, "undeclared property: {s}\n", .{property_name.chars});
-                            self.runtime_err(&buf);
+                            const written = try std.fmt.bufPrint(&buf, "undeclared property '{s}'\n", .{name.chars});
+                            self.runtime_err(written);
                             return error.RuntimeErr;
                         }
                     } else {
@@ -324,10 +334,21 @@ pub const Vm = struct {
                 },
                 .GetUpvalue => {
                     const slot = frame.read_byte();
+                    print("Get upvalue slot: {}\n", .{slot});
                     // NOTE: do we really need nullable?
                     self.stack.push(frame.closure.upvalues[slot].?.location.*);
                 },
                 .Greater => self.stack.push(try self.binop('>')),
+                .Invoke => {
+                    const method_name = frame.read_string();
+                    const arg_count = frame.read_byte();
+
+                    try self.invoke(method_name, arg_count);
+
+                    // If invoke succeeded, there is a new CallFrame on the stack.
+                    // We update the cached pointer to top frame
+                    frame = &self.frame_stack.frames[self.frame_stack.count - 1];
+                },
                 .Jump => {
                     const offset = frame.read_short();
                     frame.ip += offset;
@@ -347,9 +368,10 @@ pub const Vm = struct {
                     const offset = frame.read_short();
                     frame.ip -= offset;
                 },
+                .Method => try self.define_method(frame.read_string()),
                 .Multiply => self.stack.push(try self.binop('*')),
                 .Negate => {
-                    // PERF: https://craftinginterpreters.com/a-virtual-machine.html#challenges [4]
+                    // PERF: https://craftinginterpreters.com/a-virtual-machine.html#challenges 4
                     const value = self.stack.pop();
                     switch (value) {
                         .Int => |v| self.stack.push(Value.int(-v)),
@@ -367,8 +389,8 @@ pub const Vm = struct {
                 },
                 .Print => {
                     const value = self.stack.pop();
-                    value.print(std.debug);
-                    print("\n", .{});
+                    try value.print(self.stdout);
+                    try self.stdout.print("\n", .{});
                 },
                 .Pop => _ = self.stack.pop(),
                 .Return => {
@@ -398,8 +420,8 @@ pub const Vm = struct {
                         _ = self.globals.delete(name);
 
                         var buf: [250]u8 = undefined;
-                        _ = try std.fmt.bufPrint(&buf, "undeclared variable: {s}\n", .{name.chars});
-                        self.runtime_err(&buf);
+                        const written = try std.fmt.bufPrint(&buf, "undeclared variable '{s}'\n", .{name.chars});
+                        self.runtime_err(written);
                         return error.RuntimeErr;
                     }
                 },
@@ -447,6 +469,15 @@ pub const Vm = struct {
         // NOTE: type check forced because dynamically typed
         if (callee.as_obj()) |obj| {
             switch (obj.kind) {
+                .BoundMethod => {
+                    const bound = obj.as(ObjBoundMethod);
+                    // We replace the closure Object at the beginning of the frame window
+                    // by the receiver, matching the 'self' index 0 in the locals of each
+                    // function
+                    const val = &(self.stack.top - arg_count - 1)[0];
+                    val.* = bound.receiver;
+                    return self.call(bound.method, arg_count);
+                },
                 .Closure => return self.call(callee.as_obj().?.as(ObjClosure), arg_count),
                 .NativeFn => {
                     const function = obj.as(ObjNativeFn).function;
@@ -459,16 +490,29 @@ pub const Vm = struct {
                 .Struct => {
                     const structure = obj.as(ObjStruct);
                     const instance = try ObjInstance.create(self, structure);
+
                     // Replaces the structure by the instance before args for constructor
                     const val = &(self.stack.top - arg_count - 1)[0];
                     val.* = Value.obj(instance.as_obj());
+
+                    // Look for constructor. Tranfers all arguments to the init function
+                    if (structure.methods.get(self.init_string)) |constructor| {
+                        return self.call(constructor.as_obj().?.as(ObjClosure), arg_count);
+                    } else if (arg_count != 0) {
+                        // If no init function but args were given
+                        var buf: [250]u8 = undefined;
+                        const written = try std.fmt.bufPrint(&buf, "expected 0 argument but got {}\n", .{arg_count});
+                        self.runtime_err(written);
+                        return error.RuntimeErr;
+                    }
+
                     return;
                 },
                 else => {},
             }
         }
 
-        self.runtime_err("can only call function and structures");
+        self.runtime_err("can only call functions and structures");
         return VmErr.RuntimeErr;
     }
 
@@ -476,8 +520,8 @@ pub const Vm = struct {
         // NOTE: check necessary because one pass compiler
         if (arg_count != closure.function.arity) {
             var buf: [250]u8 = undefined;
-            _ = try std.fmt.bufPrint(&buf, "expected {} arguments but got {}\n", .{ closure.function.arity, arg_count });
-            self.runtime_err(&buf);
+            const written = try std.fmt.bufPrint(&buf, "expected {} arguments but got {}\n", .{ closure.function.arity, arg_count });
+            self.runtime_err(written);
             return error.RuntimeErr;
         }
 
@@ -492,6 +536,29 @@ pub const Vm = struct {
         // Pointer arithmetic, -1 to go before function itself
         frame.slots = self.stack.top - arg_count - 1;
         self.frame_stack.count += 1;
+    }
+
+    fn invoke(self: *Self, method_name: *ObjString, arg_count: u8) VmErr!void {
+        if (self.stack.peek(arg_count).as_obj()) |obj| {
+            const instance = obj.as(ObjInstance);
+
+            // It can be a field containing a function, as in GetProperty we check
+            if (instance.fields.get(method_name)) |field| {
+                const val = &(self.stack.top - arg_count - 1)[0];
+                val.* = field;
+                return self.call_value(field, arg_count);
+            } else if (instance.parent.methods.get(method_name)) |method| {
+                return self.call(method.as_obj().?.as(ObjClosure), arg_count);
+            } else {
+                var buf: [250]u8 = undefined;
+                const written = try std.fmt.bufPrint(&buf, "undefined property '{s}'", .{method_name.chars});
+                self.runtime_err(written);
+                return error.RuntimeErr;
+            }
+        } else {
+            self.runtime_err("only instances have methods");
+            return error.RuntimeErr;
+        }
     }
 
     // Open upvalues are an intrusive linked list, the first element is always the
@@ -544,6 +611,24 @@ pub const Vm = struct {
         }
     }
 
+    fn define_method(self: *Self, name: *ObjString) Allocator.Error!void {
+        const method = self.stack.peek(0);
+        const structure = self.stack.peek(1).as_obj().?.as(ObjStruct);
+        _ = try structure.methods.set(name, method);
+        // Pops the closure for the method
+        _ = self.stack.pop();
+    }
+
+    /// Called when there is a field access that is method. Methods are first class.
+    /// Wraps 'self' with the method
+    fn bind_method(self: *Self, method: *ObjClosure) Allocator.Error!void {
+        // Top of stack is instance (lhs of dot syntaxe)
+        const bound = try ObjBoundMethod.create(self, self.stack.peek(0), method);
+        // Pops instance
+        _ = self.stack.pop();
+        self.stack.push(Value.obj(bound.as_obj()));
+    }
+
     fn binop(self: *Self, op: u8) Allocator.Error!Value {
         // We peek first because if we pop and then the concatenation triggers
         // a GC, we could loose the two strings poped from the stack as they aren't
@@ -552,8 +637,7 @@ pub const Vm = struct {
         const v1 = self.stack.peek(1);
 
         if (v1 == .Obj and v2 == .Obj) {
-            // return try self.concatenate(v1, v2);
-            return try self.concatenate();
+            return self.concatenate(v1.as_obj().?.as(ObjString), v2.as_obj().?.as(ObjString));
         }
 
         _ = self.stack.pop();
@@ -596,17 +680,14 @@ pub const Vm = struct {
         unreachable;
     }
 
-    // fn concatenate(self: *Self, str1: Value, str2: Value) Allocator.Error!Value {
-    fn concatenate(self: *Self) Allocator.Error!Value {
-        // const obj1 = str1.as_obj().?.as(ObjString);
-        // const obj2 = str2.as_obj().?.as(ObjString);
-        const obj1 = self.stack.pop().as_obj().?.as(ObjString);
-        const obj2 = self.stack.pop().as_obj().?.as(ObjString);
-        // const obj2 = str2.as_obj().?.as(ObjString);
+    fn concatenate(self: *Self, s1: *ObjString, s2: *ObjString) Allocator.Error!Value {
+        const res = try self.allocator.alloc(u8, s1.chars.len + s2.chars.len);
+        @memcpy(res[0..s1.chars.len], s1.chars);
+        @memcpy(res[s1.chars.len..], s2.chars);
 
-        const res = try self.allocator.alloc(u8, obj1.chars.len + obj2.chars.len);
-        @memcpy(res[0..obj1.chars.len], obj1.chars);
-        @memcpy(res[obj1.chars.len..], obj2.chars);
+        // Pop after alloc in case of GC trigger
+        _ = self.stack.pop();
+        _ = self.stack.pop();
 
         return Value.obj((try ObjString.take(self, res)).as_obj());
     }
@@ -625,7 +706,7 @@ pub const Vm = struct {
         var frame = &self.frame_stack.frames[self.frame_stack.count - 1];
         var line = frame.closure.function.chunk.lines.items[self.instruction_nb()];
 
-        print("[line {}] in script: {s}\n", .{ line, msg });
+        print("[line {}] Error in script: {s}\n", .{ line, msg });
 
         for (0..self.frame_stack.count - 1) |i| {
             frame = &self.frame_stack.frames[self.frame_stack.count - i];

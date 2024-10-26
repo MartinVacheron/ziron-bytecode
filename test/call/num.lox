@@ -1,0 +1,1 @@
+123() // error: can only call functions and structures

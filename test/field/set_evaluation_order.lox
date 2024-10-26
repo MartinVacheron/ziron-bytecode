@@ -1,0 +1,2 @@
+undefined1.bar // error: expect expression
+  = undefined2

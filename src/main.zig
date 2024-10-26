@@ -34,6 +34,7 @@ fn run_file(filename: []const u8) !void {
     const file = std.fs.cwd().openFile(filename, .{ .mode = .read_only }) catch |err| {
         var buf: [500]u8 = undefined;
         _ = try std.fmt.bufPrint(&buf, "Error: {}, unable to open file at: {s}\n", .{ err, filename });
+        print("{s}", .{buf});
         return err;
     };
     defer file.close();

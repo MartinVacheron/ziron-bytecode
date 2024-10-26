@@ -1,0 +1,1 @@
+123.foo // error: only instances have field

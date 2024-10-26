@@ -13,6 +13,7 @@ pub const Obj = struct {
     is_marked: bool,
 
     const ObjKind = enum {
+        BoundMethod,
         Closure,
         Fn,
         Instance,
@@ -46,6 +47,7 @@ pub const Obj = struct {
     // NOTE: lots of repetition...
     pub fn destroy(self: *Obj, vm: *Vm) void {
         switch (self.kind) {
+            .BoundMethod => self.as(ObjBoundMethod).deinit(vm.allocator),
             .Closure => self.as(ObjClosure).deinit(vm.allocator),
             .Fn => {
                 const function = self.as(ObjFunction);
@@ -84,19 +86,37 @@ pub const Obj = struct {
         return @alignCast(@fieldParentPtr("obj", self));
     }
 
-    pub fn print(self: *Obj, writer: anytype) void {
-        switch (self.kind) {
+    pub fn print(self: *Obj, writer: anytype) std.fs.File.WriteError!void {
+        try switch (self.kind) {
+            .BoundMethod => self.as(ObjBoundMethod).method.function.print(writer),
             .Closure => self.as(ObjClosure).function.print(writer),
             .Fn => self.as(ObjFunction).print(writer),
             .Instance => writer.print("<instance of {s}>", .{self.as(ObjInstance).parent.name.chars}),
             .Iter => {
                 const iter = self.as(ObjIter);
-                writer.print("iter: {} -> {}", .{ iter.current, iter.end });
+                try writer.print("iter: {} -> {}", .{ iter.current, iter.end });
             },
             .NativeFn => writer.print("<native fn>", .{}),
             .String => writer.print("\"{s}\"", .{self.as(ObjString).chars}),
             .Struct => writer.print("<struct {s}>", .{self.as(ObjStruct).name.chars}),
             .UpValue => writer.print("upvalue", .{}),
+        };
+    }
+
+    pub fn log(self: *Obj) void {
+        switch (self.kind) {
+            .BoundMethod => self.as(ObjBoundMethod).method.function.log(),
+            .Closure => self.as(ObjClosure).function.log(),
+            .Fn => self.as(ObjFunction).log(),
+            .Instance => std.debug.print("<instance of {s}>", .{self.as(ObjInstance).parent.name.chars}),
+            .Iter => {
+                const iter = self.as(ObjIter);
+                std.debug.print("iter: {} -> {}", .{ iter.current, iter.end });
+            },
+            .NativeFn => std.debug.print("<native fn>", .{}),
+            .String => std.debug.print("\"{s}\"", .{self.as(ObjString).chars}),
+            .Struct => std.debug.print("<struct {s}>", .{self.as(ObjStruct).name.chars}),
+            .UpValue => std.debug.print("upvalue", .{}),
         }
     }
 };
@@ -237,11 +257,19 @@ pub const ObjFunction = struct {
         return &self.obj;
     }
 
-    pub fn print(self: *const Self, writer: anytype) void {
+    pub fn print(self: *const Self, writer: anytype) std.fs.File.WriteError!void {
         if (self.name) |n| {
-            writer.print("<fn {s}>", .{n.chars});
+            try writer.print("<fn {s}>", .{n.chars});
         } else {
-            writer.print("<script>", .{});
+            try writer.print("<fn script>", .{});
+        }
+    }
+
+    pub fn log(self: *const Self) void {
+        if (self.name) |n| {
+            std.debug.print("<fn {s}>", .{n.chars});
+        } else {
+            std.debug.print("<fn script>", .{});
         }
     }
 
@@ -340,7 +368,7 @@ pub const ObjUpValue = struct {
         obj.closed = Value.null_();
 
         if (config.LOG_GC) {
-            slot.print(std.debug);
+            slot.log();
             std.debug.print("\n", .{});
         }
 
@@ -360,12 +388,14 @@ pub const ObjUpValue = struct {
 pub const ObjStruct = struct {
     obj: Obj,
     name: *ObjString,
+    methods: Table,
 
     const Self = @This();
 
     pub fn create(vm: *Vm, name: *ObjString) Allocator.Error!*Self {
         const obj = try Obj.allocate(vm, Self, .Struct);
         obj.name = name;
+        obj.methods = Table.init(vm.allocator);
 
         if (config.LOG_GC) std.debug.print("<struct {s}>\n", .{name.chars});
 
@@ -377,6 +407,7 @@ pub const ObjStruct = struct {
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
+        self.methods.deinit();
         allocator.destroy(self);
     }
 };
@@ -404,6 +435,34 @@ pub const ObjInstance = struct {
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.fields.deinit();
+        allocator.destroy(self);
+    }
+};
+
+pub const ObjBoundMethod = struct {
+    obj: Obj,
+    // Receiver is the instance bound to the method. We can keep it as Value type
+    receiver: Value,
+    method: *ObjClosure,
+
+    const Self = @This();
+
+    pub fn create(vm: *Vm, receiver: Value, method: *ObjClosure) Allocator.Error!*Self {
+        const obj = try Obj.allocate(vm, Self, .BoundMethod);
+        obj.receiver = receiver;
+        obj.method = method;
+
+        if (config.LOG_GC) std.debug.print("<bound method {s}>\n", .{method.function.name.?.chars});
+
+        return obj;
+    }
+
+    pub fn as_obj(self: *Self) *Obj {
+        return &self.obj;
+    }
+
+    // Dosen't own anything, only ref
+    pub fn deinit(self: *Self, allocator: Allocator) void {
         allocator.destroy(self);
     }
 };

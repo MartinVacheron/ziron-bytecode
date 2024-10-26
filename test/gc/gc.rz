@@ -1,0 +1,10 @@
+
+fn foo() {
+    print "test gc interner..."
+
+    var a = "hello"
+
+    var b = a + " world" + "!" // tmp string a + " world" should be cleaned
+}
+
+foo()

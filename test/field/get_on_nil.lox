@@ -1,0 +1,1 @@
+null.foo // error: only instances have field

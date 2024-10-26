@@ -1,0 +1,1 @@
+"str".foo // error: only instances have field

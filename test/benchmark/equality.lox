@@ -1,0 +1,82 @@
+var i = 0
+
+var loopStart = clock()
+
+while i < 10000000 {
+  i = i + 1
+
+  1
+  1
+  1
+  2
+  1
+  null
+  1
+  "str"
+  1
+  true
+  null
+  null
+  null
+  1
+  null
+  "str"
+  null
+  true
+  true
+  true
+  true
+  1
+  true
+  false
+  true
+  "str"
+  true
+  null
+  "str"
+  "str"
+  "str"
+  "stru"
+  "str"
+  1
+  "str"
+  null
+  "str"
+  true
+}
+
+var loopTime = clock() - loopStart
+
+var start = clock()
+
+i = 0
+while i < 10000000 {
+  i = i + 1
+
+  1 == 1
+  1 == 2
+  1 == 2
+  "st" == "str"
+  false == true
+  null == null
+  null == 1
+  null == "str"
+  null == true
+  true == true
+  true == false
+  true == !false
+  true == null
+  "str" == "str"
+  "str" == "stru"
+  -5/2 == 1
+  "str" == "str"
+  "str" == "s"
+}
+
+var elapsed = clock() - start
+// print "loop"
+// print loopTime
+// print "elapsed"
+// print elapsed
+// print "equals"
+print elapsed + loopTime

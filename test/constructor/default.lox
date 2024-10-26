@@ -1,0 +1,4 @@
+struct Foo {}
+
+var foo = Foo()
+print foo // expect: <instance of Foo>

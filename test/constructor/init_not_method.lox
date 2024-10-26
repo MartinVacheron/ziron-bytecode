@@ -1,0 +1,12 @@
+struct Foo {
+  fn init(arg) {
+    print "Foo.init(" + arg + ")"
+    self.field = "init"
+  }
+}
+
+fn init() {
+  print "not initializer"
+}
+
+init() // expect: "not initializer"

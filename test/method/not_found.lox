@@ -1,0 +1,3 @@
+struct Foo {}
+
+Foo().unknown() // error: undefined property 'unknown'

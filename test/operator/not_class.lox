@@ -1,0 +1,2 @@
+struct Bar {}
+print !Bar      // error: can't use not operator on other type than bool

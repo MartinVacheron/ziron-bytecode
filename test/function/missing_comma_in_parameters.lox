@@ -1,0 +1,3 @@
+// error: expected ')' after function parameters
+// error: expect '}' after block
+fn foo(a, b c, d, e, f) {}

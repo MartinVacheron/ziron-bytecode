@@ -1,0 +1,9 @@
+fn f() {
+  for i in 1 {
+    var i = "i"
+    return i
+  }
+}
+
+print f()
+// expect: "i"

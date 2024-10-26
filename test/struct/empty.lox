@@ -1,0 +1,3 @@
+struct Foo {}
+
+print Foo // expect: <structure Foo>

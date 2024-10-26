@@ -1,0 +1,2 @@
+// error: unterminated string
+"self string has no close quote
