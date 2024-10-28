@@ -1,6 +1,6 @@
 struct Foo {
   fn method() {
-    print method // error: Undefined variable 'method'
+    print method // error: undeclared variable 'method'
   }
 }
 

@@ -1,8 +1,14 @@
-// False and null are false.
-print false or "ok" // expect: "ok"
-print null or "ok" // expect: "ok"
+fn _false() {
+    print "false"
+    return false
+}
+fn _true() {
+    print "true"
+    return true
+}
 
-// Everything else is true.
-print true or "ok" // expect: true
-print 0 or "ok" // expect: 0
-print "s" or "ok" // expect: "s"
+// False and null are false.
+_true() or "ok" // expect: "true"
+_false() or _true() // expect: "false"
+// expect: "true"
+

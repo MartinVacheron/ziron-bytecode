@@ -1,1 +1,1 @@
-null + null // error: Operation not allowed
+null + null // error: binary operation only allowed between ints or floats

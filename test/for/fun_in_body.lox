@@ -1,2 +1,2 @@
-// error: expected placeholder variable
+// error: expect variable name
 for () fn foo() {}

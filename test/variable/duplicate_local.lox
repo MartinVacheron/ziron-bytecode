@@ -1,4 +1,4 @@
 {
   var a = "value"
-  var a = "other" // error: already declared variable in this scope
+  var a = "other" // error: already a variable with this name in this scope
 }

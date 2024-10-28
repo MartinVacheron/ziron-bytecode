@@ -1,1 +1,1 @@
-1 * "1" // error: Operation not allowed
+1 * "1" // error: binary operation only allowed between ints or floats

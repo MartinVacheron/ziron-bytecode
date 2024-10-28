@@ -307,14 +307,15 @@ pub const Vm = struct {
                     self.stack.push(frame.slots[index]);
                 },
                 .GetProperty => {
-                    const instance = self.stack.peek(0).as_obj().?.as(ObjInstance);
                     const name = frame.read_string();
 
                     if (self.stack.peek(0).as_obj()) |obj| {
                         if (obj.kind != .Instance) {
-                            self.runtime_err("only instances have properties");
+                            self.runtime_err("only instances have fields");
                             return error.RuntimeErr;
                         }
+
+                        const instance = obj.as(ObjInstance);
 
                         if (instance.fields.get(name)) |value| {
                             _ = self.stack.pop(); // Instance
@@ -323,18 +324,17 @@ pub const Vm = struct {
                             try self.bind_method(method.as_obj().?.as(ObjClosure));
                         } else {
                             var buf: [128]u8 = undefined;
-                            const written = try std.fmt.bufPrint(&buf, "undeclared property '{s}'\n", .{name.chars});
+                            const written = try std.fmt.bufPrint(&buf, "undeclared field '{s}'\n", .{name.chars});
                             self.runtime_err(written);
                             return error.RuntimeErr;
                         }
                     } else {
-                        self.runtime_err("only instances have properties");
+                        self.runtime_err("only instances have fields");
                         return error.RuntimeErr;
                     }
                 },
                 .GetUpvalue => {
                     const slot = frame.read_byte();
-                    print("Get upvalue slot: {}\n", .{slot});
                     // NOTE: do we really need nullable?
                     self.stack.push(frame.closure.upvalues[slot].?.location.*);
                 },
@@ -551,7 +551,7 @@ pub const Vm = struct {
                 return self.call(method.as_obj().?.as(ObjClosure), arg_count);
             } else {
                 var buf: [250]u8 = undefined;
-                const written = try std.fmt.bufPrint(&buf, "undefined property '{s}'", .{method_name.chars});
+                const written = try std.fmt.bufPrint(&buf, "undefined field '{s}'", .{method_name.chars});
                 self.runtime_err(written);
                 return error.RuntimeErr;
             }
@@ -629,7 +629,7 @@ pub const Vm = struct {
         self.stack.push(Value.obj(bound.as_obj()));
     }
 
-    fn binop(self: *Self, op: u8) Allocator.Error!Value {
+    fn binop(self: *Self, op: u8) VmErr!Value {
         // We peek first because if we pop and then the concatenation triggers
         // a GC, we could loose the two strings poped from the stack as they aren't
         // roots anymore
@@ -645,12 +645,12 @@ pub const Vm = struct {
 
         if ((v1 != .Int and v1 != .Float) or (v2 != .Int and v2 != .Float)) {
             self.runtime_err("binary operation only allowed between ints or floats");
-            return Value.null_();
+            return error.RuntimeErr;
         }
 
         if ((v1 == .Int and v2 != .Int) or (v1 == .Float and v2 != .Float)) {
             self.runtime_err("binary operation must be on two ints or two floats");
-            return Value.null_();
+            return error.RuntimeErr;
         }
 
         if (v1 == .Int and v2 == .Int) {

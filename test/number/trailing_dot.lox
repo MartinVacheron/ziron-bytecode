@@ -1,2 +1,2 @@
 // error: expect property name after '.'
-123. () // () just to prevent '\n' being in the err msg
+123.  // () just to prevent '\n' being in the err msg

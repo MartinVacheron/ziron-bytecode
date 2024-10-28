@@ -33,7 +33,11 @@ print(clr_str("\n\t\tLaunching benchmarks for Rizon language\n", YELLOW))
 
 # Compilation
 print("Compiling in release mode...")
-subprocess.run(["zig", "build", "-DReleaseFast"], cwd="..", capture_output=True)
+result = subprocess.run(["zig", "build", "-Doptimize=ReleaseFast"], cwd="..", capture_output=True)
+rizon_output = result.stderr.decode().strip()
+
+if not rizon_output == "":
+    print(rizon_output)
 print("Compilation done\n")
 
 # Result file

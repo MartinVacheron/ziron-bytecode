@@ -87,10 +87,6 @@ for dir in os.listdir():
                 res = clr_str("Ok", GREEN)
                 total_ok += 1
             else:
-                print(f"Got results: {rizon_res}")
-                print(f"Expected results: {expects}")
-                print(f"Got errors {rizon_err}")
-                print(f"Expected erros: {errors}")
                 res = clr_str("Ko", RED)
                 total_ko += 1
 
@@ -103,7 +99,7 @@ for dir in os.listdir():
 
                 if len(rizon_err) > 0:
                     print(f"Expected errors:\n{errors}")
-                    print(f"Got errros:\n{rizon_err}")
+                    print(f"Got errors:\n{rizon_err}")
 
                 print()
 

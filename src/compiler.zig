@@ -262,11 +262,7 @@ pub const Compiler = struct {
 
         self.function = try ObjFunction.create(vm, name);
 
-        if (kind == .Initializer or kind == .Method) {
-            self.in_struct = true;
-        } else {
-            self.in_struct = false;
-        }
+        self.in_struct = if (enclosing) |e| e.in_struct else false;
 
         // Because the first value in the stack will be the function object
         // itself. We keep the first slot empty to be aligned to runtime stack
@@ -373,7 +369,7 @@ pub const Compiler = struct {
     }
 
     fn add_local(self: *Self, name: []const u8) void {
-        if (self.local_count == std.math.maxInt(u8) + 1) {
+        if (self.local_count == std.math.maxInt(u8)) {
             self.parser.err("too many local variables in function");
             return;
         }
@@ -485,6 +481,8 @@ pub const Compiler = struct {
 
         if (!self.parser.check(.RightParen)) {
             while (true) {
+                self.parser.skip_new_lines();
+
                 try self.expression();
 
                 if (args_count == 255) {
@@ -524,7 +522,10 @@ pub const Compiler = struct {
             try self.emit_byte(.Null);
         }
 
-        self.parser.consume(.NewLine, "expect new line after variable declaration");
+        if (!self.parser.check(.Eof)) {
+            self.parser.consume(.NewLine, "expect new line after variable declaration");
+        }
+
         try self.define_variable(global_id);
     }
 
@@ -547,6 +548,8 @@ pub const Compiler = struct {
 
         if (!self.parser.check(.RightParen)) {
             while (true) {
+                self.parser.skip_new_lines();
+
                 compiler.function.arity += 1;
 
                 if (compiler.function.arity > 255) {
@@ -575,6 +578,9 @@ pub const Compiler = struct {
 
     fn struct_declaration(self: *Self) Allocator.Error!void {
         self.parser.consume(.Identifier, "expect structure name");
+
+        self.in_struct = true;
+
         const struct_name = &self.parser.previous;
         const name_id = try self.identifier_constant(&self.parser.previous);
         self.declare_variable();
@@ -601,6 +607,8 @@ pub const Compiler = struct {
 
         // We pop the structure that was put by the `named variable` method
         try self.emit_byte(.Pop);
+
+        self.in_struct = false;
     }
 
     fn method(self: *Self) Allocator.Error!void {
@@ -897,7 +905,7 @@ pub const Compiler = struct {
     // Calls variable that handles the local machinery for us
     fn self_(self: *Self, _: bool) Allocator.Error!void {
         if (!self.in_struct) {
-            self.parser.err("can't use 'self' outside of structure");
+            self.parser.err("can't use 'self' outside of a structure");
             return;
         }
         try self.variable(false);

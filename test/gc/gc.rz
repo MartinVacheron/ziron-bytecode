@@ -1,6 +1,6 @@
 
 fn foo() {
-    print "test gc interner..."
+    // print "test gc interner..."
 
     var a = "hello"
 

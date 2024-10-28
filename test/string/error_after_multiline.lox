@@ -4,4 +4,4 @@ var a = "1
 3
 "
 
-err // error: Undefined variable 'err'
+err // error: undeclared variable 'err'

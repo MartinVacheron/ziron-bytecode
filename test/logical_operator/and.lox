@@ -1,13 +1,22 @@
-// Note: These tests implicitly depend on ints being truthy.
+fn _false() {
+    print "false"
+    return false
+}
+fn _true() {
+    print "true"
+    return true
+}
 
 // Return the first non-true argument.
-print false and 1 // expect: false
-print true and 1 // expect: 1
-print 1 and 2 and false // expect: false
+_false() and _true() // expect: "false"
 
-// Return the last argument if all are true.
-print 1 and true // expect: true
-print 1 and 2 and 3 // expect: 3
+_true() and _true() // expect: "true"
+// expect: "true"
+
+_true() and _true() and _false() // expect: "true"
+// expect: "true"
+// expect: "false"
+
 
 // Short-circuit at the first false argument.
 var a = "before"

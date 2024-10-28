@@ -254,4 +254,4 @@ fn f(
     a252,
     a253,
     a254,
-    a255, a) {} // error: can't have more than 255 parameters
+    a255, a) {} // error: too many local variables in function

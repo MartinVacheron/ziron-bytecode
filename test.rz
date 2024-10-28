@@ -1,15 +1,17 @@
-var f
+var f1
 
-{
-  var local = "local"
-  fn f_() {
-    print local
-    local = "after f"
-    print local
+for i in 4 {
+  var j = i
+  fn f() {
+    print i
+    print j
   }
-  f = f_
+
+  if j == 1 {
+      f1 = f // 1 1
+  }
 }
 
-f()
-// expect: "local"
-// expect: "after f"
+f1() // expect: 3
+      // expect: 1
+

@@ -98,7 +98,7 @@ pub const Obj = struct {
             },
             .NativeFn => writer.print("<native fn>", .{}),
             .String => writer.print("\"{s}\"", .{self.as(ObjString).chars}),
-            .Struct => writer.print("<struct {s}>", .{self.as(ObjStruct).name.chars}),
+            .Struct => writer.print("<structure {s}>", .{self.as(ObjStruct).name.chars}),
             .UpValue => writer.print("upvalue", .{}),
         };
     }
@@ -115,7 +115,7 @@ pub const Obj = struct {
             },
             .NativeFn => std.debug.print("<native fn>", .{}),
             .String => std.debug.print("\"{s}\"", .{self.as(ObjString).chars}),
-            .Struct => std.debug.print("<struct {s}>", .{self.as(ObjStruct).name.chars}),
+            .Struct => std.debug.print("<structure {s}>", .{self.as(ObjStruct).name.chars}),
             .UpValue => std.debug.print("upvalue", .{}),
         }
     }

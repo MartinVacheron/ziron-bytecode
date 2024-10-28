@@ -1,4 +1,4 @@
 struct Foo {}
 var foo = Foo()
 
-foo.bar // error: instance dosen't have field bar
+foo.bar // error: undeclared field 'bar'
